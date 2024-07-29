@@ -1,0 +1,34 @@
+################################################################################
+# Copyright (c) 2024 Contributors to the Eclipse Foundation
+#
+# See the NOTICE file(s) distributed with this work for additional
+# information regarding copyright ownership.
+#
+# This program and the accompanying materials are made available under the
+# terms of the Apache License Version 2.0 which is available at
+# https://www.apache.org/licenses/LICENSE-2.0
+#
+# SPDX-License-Identifier: Apache-2.0
+################################################################################
+
+[package]
+name = "up-subscription"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+async-mutex = { workspace = true }
+async-trait = { workspace = true }
+env_logger = { workspace = true }
+futures = { workspace = true }
+log = { workspace = true }
+protobuf = { workspace = true }
+semver = { version = "1.0" }
+tokio = { workspace = true }
+up-rust = { workspace = true }
+uriparse = { version = "0.6" }
+
+[dev-dependencies]
+mockall = { workspace = true }
+test-case = { workspace = true }
