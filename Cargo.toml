@@ -12,19 +12,21 @@
 ################################################################################
 
 [workspace]
-resolver = "2"
+exclude = [".vscode/*", ".github/*", "tools/*", ".gitignore"]
 members = ["up-subscription", "up-subscription-cli"]
+resolver = "2"
 
 [workspace.package]
-description = "Rust implementation of the Eclipse uProtocol uSubscription specification"
+authors = ["Eclipse Foundation uProtocol Project"]
 documentation = "https://github.com/eclipse-uprotocol/up-spec/tree/main/up-l3/usubscription/v3"
 edition = "2021"
-exclude = [".vscode/*", ".github/*", "tools/*", ".gitignore"]
+homepage = "https://github.com/eclipse-uprotocol"
 keywords = ["uProtocol", "uSubscription"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/eclipse-uprotocol/up-subscription-rust"
-version = "0.1.0"
+rust-version = "1.80.0"
+version = "0.1.3"
 
 [workspace.dependencies]
 async-mutex = { version = "1.4" }
@@ -38,3 +40,25 @@ test-case = { version = "3.3" }
 tokio = { version = "1", features = ["full"] }
 up-rust = { version = "0.1.3", features = ["usubscription"] }
 up-subscription = { path = "./up-subscription" }
+
+# Config for 'cargo dist'
+[workspace.metadata.dist]
+# The preferred cargo-dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.19.1"
+# CI backends to support
+ci = "github"
+# The installers to generate for each app
+installers = ["shell"]
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Publish jobs to run in CI
+pr-run-mode = "skip"
+# Whether to install an updater program
+install-updater = false
+
+# The profile that 'cargo dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
