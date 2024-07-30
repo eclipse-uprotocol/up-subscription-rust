@@ -57,8 +57,9 @@ impl std::error::Error for StartupError {}
 
 #[derive(clap::ValueEnum, Clone, Default, Debug)]
 enum Transports {
-    #[cfg(feature = "socket")]
     #[default]
+    None,
+    #[cfg(feature = "socket")]
     Socket,
     #[cfg(feature = "zenoh")]
     Zenoh,
@@ -122,6 +123,7 @@ async fn main() {
     let client: Option<Arc<dyn RpcClient>> = None;
 
     let (transport, client) = match args.transport {
+        Transports::None => (None::<Arc<dyn UTransport>>, None::<Arc<dyn RpcClient>>),
         #[cfg(feature = "socket")]
         Transports::Socket => get_socket_handlers(config.clone()).await,
         #[cfg(feature = "zenoh")]

@@ -13,9 +13,19 @@
 
 [package]
 name = "up-subscription-cli"
+description = "Rust implementation of the Eclipse uProtocol uSubscription specification, cli frontend"
+authors.workspace = true
 edition.workspace = true
+homepage.workspace = true
 license.workspace = true
+repository.workspace = true
 version.workspace = true
+
+[package.metadata.wix]
+upgrade-guid = "3E48EB10-ACFD-4B07-A264-B390EE2653DD"
+path-guid = "C290A21B-FDDD-46D3-B390-249F0AFDC75C"
+license = false
+eula = false
 
 [features]
 default = ["socket"]
