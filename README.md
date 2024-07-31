@@ -10,10 +10,10 @@ This codebase is heavily work in progress - among the next things to do and inve
 - [x] make size of command channels bounded and (probably) configurable
 - [x] handling of startup and proper shutdown for usubscription service
 - [ ] look into recent up-rust changes around Rpc and UTransport implementations, and whether we can  use something from there
-- [ ] add github CI pipeline setup
+- [x] add github CI pipeline setup
 - [x] create a usubscription-cli module, a simple command-line frontend for running up-subscription
 - [ ] create a little demo application for interacting with up-subscription
-- [ ] set up a devcontainer
+- [x] set up a devcontainer
 - [ ] feed back learnings and clarifications into up-spec usubscription documentation
 
 ## Implementation questions
