@@ -13,13 +13,15 @@
 
 use clap::Parser;
 use clap_num::number_range;
-use daemonize::Daemonize;
 use log::*;
 use std::sync::Arc;
 use tokio::signal;
 
 use up_rust::{communication::RpcClient, UTransport};
 use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscriptionService};
+
+#[cfg(unix)]
+use daemonize::Daemonize;
 
 mod modules;
 #[cfg(feature = "socket")]
@@ -74,6 +76,7 @@ pub(crate) struct Args {
     authority: String,
 
     /// Run as a daemon (in the background)
+    #[cfg(unix)]
     #[arg(short, long, default_value_t = false)]
     daemon: bool,
 
@@ -152,7 +155,7 @@ async fn main() {
     );
 
     // Daemonize or wait for shutdown signal
-    if args.daemon {
+    if cfg!(unix) && args.daemon {
         let daemonize = Daemonize::new();
         match daemonize.start() {
             Ok(_) => debug!("Success, daemonized"),

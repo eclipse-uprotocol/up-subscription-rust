@@ -37,7 +37,6 @@ async-mutex = { workspace = true }
 async-trait = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 clap-num = { version = "1.1" }
-daemonize = { version = "0.5" }
 env_logger = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
@@ -47,6 +46,9 @@ up-rust = { workspace = true }
 up-subscription = { workspace = true }
 up-transport-zenoh = { git = "https://github.com/eclipse-uprotocol/up-transport-zenoh-rust.git", rev = "f813ddac246efa782e02e85a757076a27b523f0b", optional = true }
 up-transport-socket-rust = { git = "https://github.com/eclipse-uprotocol/up-transport-socket.git", rev = "78ac7ff6acba7090a79fc36b2ddca49bd93e7188", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+daemonize = { version = "0.5" }
 
 [dev-dependencies]
 mockall = { workspace = true }
