@@ -72,7 +72,7 @@ enum Transports {
 #[command(version, about = "Rust implementation of Eclipse uProtocol USubscription service.", long_about = None)]
 pub(crate) struct Args {
     /// Authority name for usubscription service
-    #[arg(short, long)]
+    #[arg(short, long, env)]
     authority: String,
 
     /// Run as a daemon (in the background)
@@ -81,19 +81,19 @@ pub(crate) struct Args {
     daemon: bool,
 
     /// The transport implementation to use
-    #[arg(short, long)]
+    #[arg(short, long, env)]
     transport: Transports,
 
     /// Buffer size of subscription command channel - minimum 1, maximum 1024, defaults to 1024
-    #[arg(short, long, value_parser=between_1_and_1024)]
+    #[arg(short, long, env, value_parser=between_1_and_1024)]
     subscription_buffer: Option<usize>,
 
     /// Buffer size of notification command channel - minimum 1, maximum 1024, defaults to 1024
-    #[arg(short, long, value_parser=between_1_and_1024)]
+    #[arg(short, long, env, value_parser=between_1_and_1024)]
     notification_buffer: Option<usize>,
 
     /// Increase verbosity of output
-    #[arg(short, long, default_value_t = false)]
+    #[arg(short, long, env, default_value_t = false)]
     verbose: bool,
 }
 
@@ -155,17 +155,20 @@ async fn main() {
     );
 
     // Daemonize or wait for shutdown signal
-    if cfg!(unix) && args.daemon {
+    #[cfg(unix)]
+    if args.daemon {
         let daemonize = Daemonize::new();
         match daemonize.start() {
-            Ok(_) => debug!("Success, daemonized"),
+            Ok(_) => {
+                debug!("Success, running daemonized");
+            }
             Err(e) => error!("Error, {}", e),
         }
-    } else {
-        signal::ctrl_c().await.expect("failed to listen for event");
-        info!("Stopping usubscription service");
-        ustop.stop().await;
     }
+
+    signal::ctrl_c().await.expect("failed to listen for event");
+    info!("Stopping usubscription service");
+    ustop.stop().await;
 }
 
 fn config_from_args(args: &Args) -> Result<Arc<USubscriptionConfiguration>, ConfigurationError> {
