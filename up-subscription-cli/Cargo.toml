@@ -35,7 +35,7 @@ zenoh = ["dep:up-transport-zenoh"]
 [dependencies]
 async-mutex = { workspace = true }
 async-trait = { workspace = true }
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive", "env"] }
 clap-num = { version = "1.1" }
 env_logger = { workspace = true }
 futures = { workspace = true }

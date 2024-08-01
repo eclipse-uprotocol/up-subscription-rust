@@ -36,3 +36,6 @@ uriparse = { version = "0.6" }
 [dev-dependencies]
 mockall = { workspace = true }
 test-case = { workspace = true }
+
+[package.metadata.dist]
+all-features = true
