@@ -55,3 +55,19 @@ cargo run --features zenoh -- -t zenoh -a usubscription.local -v
 ```
 
 `up-subscription-cli` can be used with any uProtocol rust transport implementation - the available options are controlled as cargo features, refer to the definitions in the `[features]` section of up-subscription-cli `Cargo.toml`. Currently supported are [zenoh](https://github.com/eclipse-uprotocol/up-transport-zenoh-rust) and [socket](https://github.com/eclipse-uprotocol/up-transport-socket) transports, with [mqtt](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust) to follow as soon as they move over to using the up-rust release version from crates.io.
+
+### Running with docker
+
+The `up-subscription-cli` also can be built and run using docker and docker-compose. The top-level `Dockerfile` and `docker-compose.yaml` are provided for that purpose. `up-subscription-cli` can be provided with configuration parameters both via cli arguments, as well as environment variables. For reference on these, please refer to `docker-compose.yaml`. Please note that this configuration is provided mainly for demonstration purposes - for a production deployment, you want to revisit e.g. the network settings used by the container.
+
+To build the container, in the project root run
+
+```console
+docker build -t up-subscription .
+```
+
+To run (and auto-build if required) the container, in the project root run
+
+```console
+docker-compose up
+```
