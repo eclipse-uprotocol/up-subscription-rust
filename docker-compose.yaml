@@ -23,3 +23,6 @@ services:
       - AUTHORITY=usubscription.local
       - TRANSPORT=zenoh
       - VERBOSE=true
+
+#      - SUBSCRIPTION_BUFFER=1024
+#      - NOTIFICATION_BUFFER=1024
