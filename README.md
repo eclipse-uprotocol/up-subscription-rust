@@ -14,6 +14,7 @@ This codebase is heavily work in progress - among the next things to do and inve
 - [x] create a usubscription-cli module, a simple command-line frontend for running up-subscription
 - [ ] create a little demo application for interacting with up-subscription
 - [x] set up a devcontainer
+- [ ] do we need update/change notifications when remote SubscriptionResponses come in?
 - [ ] feed back learnings and clarifications into up-spec usubscription documentation
 
 ## Implementation questions
@@ -70,4 +71,111 @@ To run (and auto-build if required) the container, in the project root run
 
 ```console
 docker-compose up
+```
+
+## Design
+
+USubscription service implementation is a three-tiered design, with the following layers:
+
+- UTransport listeners, which link USubscription service methods to a specific transport implementation
+- USubscription service, which is called from the listeners and performs input validation as well as high-level business logic orchestration; it acts as a frontend for
+- subscription and notification manager actors, which contain the book-keeping and core business logic around subscriptions and notifications
+
+The overall usubscription service implementation comprises the following building blocks:
+
+```mermaid
+block-beta
+   columns 3
+
+   transport(("UTransport")):3
+   space:3
+
+   block:listeners:3
+      SubscribeListener
+      UnsubscribeListener
+      etcListener
+   end
+   space:3
+
+   usubscription:3
+   space:3
+
+   subscription_manager:1
+   space:1
+   notification_manager:1
+   space:3
+
+   task("remote_(un)subscribe")
+   space:2
+
+   transport--"rpc call"-->listeners
+   listeners-->usubscription
+   usubscription--"mpsc channel"-->subscription_manager
+   usubscription--"mpsc channel"-->notification_manager
+   subscription_manager--"spawn"-->task
+
+   classDef smaller font-size:small;
+   class SubscribeListener,UnsubscribeListener,etcListener smaller
+   class task smaller
+```
+
+$~$
+
+A basic interaction flow for a client requesting a subscription is illustrated below:
+
+```mermaid
+sequenceDiagram
+   actor UTransport
+   box WhiteSmoke USUbscription Service
+      participant subscribe listener
+      participant usubscription
+      participant subscription_manager
+      participant notification_manager
+   end
+
+   UTransport-->>+subscribe listener: SubscriptionRequest
+   subscribe listener->>usubscription: subscribe()
+   
+   activate usubscription
+      usubscription->>subscription_manager: send(SubscriptionEvent::AddSubscription)
+   activate subscription_manager
+         subscription_manager-->>subscription_manager: validate and store subscription info
+
+         alt is local topic
+            subscription_manager-->>usubscription: send(SubscriptionStatus::SUBSCRIBED)
+
+         else is remote topic
+            subscription_manager-->>usubscription: send(SubscriptionStatus::SUBSCRIBE_PENDING)
+
+            create participant remote_subscribe
+               subscription_manager-->>remote_subscribe: spawn()
+   deactivate subscription_manager
+               remote_subscribe-->>UTransport: send remote SubscriptionRequest
+               UTransport-->>remote_subscribe: remote SubscriptionResponse
+
+   #            remote_subscribe->>+notification_manager: send(NotificationEvent::StateChange)
+   #            notification_manager-->>UTransport: send(Update) to default notification channel   
+   #            loop Every custom notification
+   #               notification_manager-->>UTransport: send(Update) custom channel
+   #            end
+   #            notification_manager-->>-remote_subscribe: send(())
+
+   activate subscription_manager
+               destroy remote_subscribe
+                  remote_subscribe-->>subscription_manager: send(RemoteSubscriptionEvent::RemoteTopicStateUpdate)
+               subscription_manager-->>subscription_manager: update subscription info
+         end
+   deactivate subscription_manager
+
+      usubscription->>subscribe listener: SubscriptionResponse
+      subscribe listener-->>UTransport: SubscriptionResponse
+
+      usubscription->>+notification_manager: send(NotificationEvent::StateChange)
+      notification_manager-->>UTransport: send(Update) to default notification channel   
+      loop Every custom notification
+         notification_manager-->>UTransport: send(Update) custom channel
+      end
+      notification_manager-->>-usubscription: send(())
+   deactivate usubscription
+
 ```
