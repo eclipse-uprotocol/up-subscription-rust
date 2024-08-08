@@ -14,7 +14,6 @@ This codebase is heavily work in progress - among the next things to do and inve
 - [x] create a usubscription-cli module, a simple command-line frontend for running up-subscription
 - [ ] create a little demo application for interacting with up-subscription
 - [x] set up a devcontainer
-- [ ] do we need update/change notifications when remote SubscriptionResponses come in?
 - [ ] feed back learnings and clarifications into up-spec usubscription documentation
 
 ## Implementation questions
@@ -22,6 +21,7 @@ This codebase is heavily work in progress - among the next things to do and inve
 - Is it expected that a uEntity can register more than one custom topic receiving update notifications?
 - Is it supposed to be possible to register remote uuris as notification topics?
 - Should remote UUris be excluded from all listeners except `subscribe` and `unsubscribe`?
+- Do we need update/change notifications when remote SubscriptionResponses come in?
 
 ## Getting Started
 
