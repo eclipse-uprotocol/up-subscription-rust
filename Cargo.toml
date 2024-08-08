@@ -12,7 +12,7 @@
 ################################################################################
 
 [workspace]
-exclude = [".vscode/*", ".github/*", "tools/*", ".gitignore"]
+exclude = [".vscode/*", ".github/*", "tools/*", ".gitignore", ".devcontainer/*"]
 members = ["up-subscription", "up-subscription-cli"]
 resolver = "2"
 
