@@ -147,11 +147,16 @@ pub(crate) async fn handle_message(
                     topic,
                     respond_to,
                 } => {
+                    let mut subscr_before_ins = 0;
+                    if let Some(subscriber_set) = topic_subscribers.get(&topic) {
+                        subscr_before_ins = subscriber_set.len();
+                    }
+
                     // Add new subscriber to topic subscription tracker (create new entries as necessary)
                     topic_subscribers
                         .entry(topic.clone())
                         .or_default()
-                        .insert(subscriber);
+                        .insert(subscriber.clone());
 
                     // This really should unwrap() ok, as we just inserted an entry above
                     let subscribers_count =
@@ -160,10 +165,15 @@ pub(crate) async fn handle_message(
                     let mut state = TopicState::SUBSCRIBED; // everything in topic_subscribers is considered SUBSCRIBED by default
 
                     if topic.is_remote_authority(&own_uri) {
-                        state = TopicState::SUBSCRIBE_PENDING; // for remote_topics, we explicitly track state due to the _PENDING scenarios
-                        remote_topics.entry(topic.clone()).or_insert(state);
+                        if let Some(remote_state) = remote_topics.get(&topic) {
+                            state = *remote_state;
+                        } else {
+                            state = TopicState::SUBSCRIBE_PENDING; // for remote_topics, we explicitly track state due to the _PENDING scenarios
+                        }
 
-                        if subscribers_count == 1 {
+                        remote_topics.entry(topic.clone()).or_insert(state);
+                        if subscribers_count == 1 && subscr_before_ins == 0 {
+                            
                             // this is the first subscriber to this (remote) topic, so perform remote subscription
                             let own_uri_clone = own_uri.clone();
                             let up_client_clone = up_client.clone();
@@ -573,6 +583,8 @@ mod tests {
     // These are tests just for the locally used helper functions of subscription manager. More complex and complete
     // tests of the susbcription manager business logic are located in tests/subscription_manager_tests.rs
 
+    use std::hash::{DefaultHasher, Hash};
+
     use super::*;
     use protobuf::MessageFull;
 
@@ -732,6 +744,7 @@ mod tests {
             resource_id: RESOURCE_ID_SUBSCRIBE as u32,
             ..Default::default()
         };
+
         let remote_method = make_remote_subscribe_uuri(&test_lib::helpers::remote_topic1_uri());
 
         assert_eq!(expected_uri, remote_method);
