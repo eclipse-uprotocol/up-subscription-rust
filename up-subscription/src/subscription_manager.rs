@@ -456,9 +456,9 @@ async fn remote_subscribe(
             make_remote_subscribe_uuri(&subscription_request.topic),
             CallOptions::for_rpc_request(
                 UP_REMOTE_TTL,
-                Some(UUID::new()),
+                Some(UUID::build()),
                 None,
-                Some(UPriority::UPRIORITY_CS2),
+                Some(UPriority::UPRIORITY_CS4),
             ),
             subscription_request,
         )
@@ -612,12 +612,12 @@ mod tests {
         let expected_topic = test_lib::helpers::remote_topic1_uri();
         let expected_method = make_remote_subscribe_uuri(&expected_topic);
         let expected_subscriber = test_lib::helpers::local_usubscription_service_uri();
-
+        let expected_message_id = UUID::build();
         let expected_options = CallOptions::for_rpc_request(
             UP_REMOTE_TTL,
-            Some(UUID::new()),
+            Some(expected_message_id),
             None,
-            Some(UPriority::UPRIORITY_CS2),
+            Some(UPriority::UPRIORITY_CS4),
         );
         let expected_request = SubscriptionRequest {
             topic: Some(expected_topic.clone()).into(),
