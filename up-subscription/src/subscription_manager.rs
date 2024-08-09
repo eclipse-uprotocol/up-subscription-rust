@@ -509,9 +509,9 @@ async fn remote_unsubscribe(
             make_remote_unsubscribe_uuri(&unsubscribe_request.topic),
             CallOptions::for_rpc_request(
                 UP_REMOTE_TTL,
-                Some(UUID::new()),
+                Some(UUID::build()),
                 None,
-                Some(UPriority::UPRIORITY_CS2),
+                Some(UPriority::UPRIORITY_CS4),
             ),
             unsubscribe_request,
         )
@@ -677,9 +677,9 @@ mod tests {
 
         let expected_options = CallOptions::for_rpc_request(
             UP_REMOTE_TTL,
-            Some(UUID::new()),
+            Some(UUID::build()),
             None,
-            Some(UPriority::UPRIORITY_CS2),
+            Some(UPriority::UPRIORITY_CS4),
         );
         let expected_request = UnsubscribeRequest {
             topic: Some(expected_topic.clone()).into(),

@@ -351,9 +351,9 @@ mod tests {
         };
         let remote_call_options = CallOptions::for_rpc_request(
             UP_REMOTE_TTL,
-            Some(UUID::new()),
+            Some(UUID::build()),
             None,
-            Some(UPriority::UPRIORITY_CS2),
+            Some(UPriority::UPRIORITY_CS4),
         );
         let command_sender =
             CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
@@ -511,9 +511,9 @@ mod tests {
         };
         let remote_call_options = CallOptions::for_rpc_request(
             UP_REMOTE_TTL,
-            Some(UUID::new()),
+            Some(UUID::build()),
             None,
-            Some(UPriority::UPRIORITY_CS2),
+            Some(UPriority::UPRIORITY_CS4),
         );
         let command_sender = CommandSender::new_with_client_options::<UnsubscribeRequest, UStatus>(
             remote_method,

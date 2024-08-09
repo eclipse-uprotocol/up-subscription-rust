@@ -79,9 +79,9 @@ mod tests {
             };
             let expected_call_options = CallOptions::for_rpc_request(
                 crate::UP_REMOTE_TTL,
-                Some(UUID::new()),
+                Some(UUID::build()),
                 None,
-                Some(UPriority::UPRIORITY_CS2),
+                Some(UPriority::UPRIORITY_CS4),
             );
             let remote_subscription_request = SubscriptionRequest {
                 topic: Some(topic.clone()).into(),
@@ -199,9 +199,9 @@ mod tests {
             };
             let expected_call_options = CallOptions::for_rpc_request(
                 crate::UP_REMOTE_TTL,
-                Some(UUID::new()),
+                Some(UUID::build()),
                 None,
-                Some(UPriority::UPRIORITY_CS2),
+                Some(UPriority::UPRIORITY_CS4),
             );
             let remote_unsubscribe_request = UnsubscribeRequest {
                 topic: Some(topic.clone()).into(),
