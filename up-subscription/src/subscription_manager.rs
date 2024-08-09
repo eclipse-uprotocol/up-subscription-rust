@@ -156,7 +156,7 @@ pub(crate) async fn handle_message(
                     topic_subscribers
                         .entry(topic.clone())
                         .or_default()
-                        .insert(subscriber.clone());
+                        .insert(subscriber);
 
                     // This really should unwrap() ok, as we just inserted an entry above
                     let subscribers_count =
@@ -583,7 +583,6 @@ mod tests {
     // These are tests just for the locally used helper functions of subscription manager. More complex and complete
     // tests of the susbcription manager business logic are located in tests/subscription_manager_tests.rs
 
-    use std::hash::{DefaultHasher, Hash};
 
     use super::*;
     use protobuf::MessageFull;
