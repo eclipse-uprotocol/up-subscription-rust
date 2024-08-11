@@ -173,7 +173,6 @@ pub(crate) async fn handle_message(
 
                         remote_topics.entry(topic.clone()).or_insert(state);
                         if subscribers_count == 1 && subscr_before_ins == 0 {
-                            
                             // this is the first subscriber to this (remote) topic, so perform remote subscription
                             let own_uri_clone = own_uri.clone();
                             let up_client_clone = up_client.clone();
@@ -582,7 +581,6 @@ pub(crate) fn make_remote_unsubscribe_uuri(uri: &UUri) -> UUri {
 mod tests {
     // These are tests just for the locally used helper functions of subscription manager. More complex and complete
     // tests of the susbcription manager business logic are located in tests/subscription_manager_tests.rs
-
 
     use super::*;
     use protobuf::MessageFull;
