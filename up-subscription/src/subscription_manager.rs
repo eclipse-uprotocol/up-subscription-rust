@@ -27,7 +27,7 @@ use up_rust::{
         RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
         USUBSCRIPTION_VERSION_MAJOR,
     },
-    UCode, UPriority, UStatus, UUri, UUID,
+    UCode, UStatus, UUri,
 };
 
 use crate::{helpers, usubscription::UP_REMOTE_TTL};
@@ -463,12 +463,7 @@ async fn remote_subscribe(
     let subscription_response: SubscriptionResponse = up_client
         .invoke_proto_method(
             make_remote_subscribe_uuri(&subscription_request.topic),
-            CallOptions::for_rpc_request(
-                UP_REMOTE_TTL,
-                Some(UUID::build()),
-                None,
-                Some(UPriority::UPRIORITY_CS4),
-            ),
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None),
             subscription_request,
         )
         .await
@@ -516,12 +511,7 @@ async fn remote_unsubscribe(
     let unsubscribe_response: UStatus = up_client
         .invoke_proto_method(
             make_remote_unsubscribe_uuri(&unsubscribe_request.topic),
-            CallOptions::for_rpc_request(
-                UP_REMOTE_TTL,
-                Some(UUID::build()),
-                None,
-                Some(UPriority::UPRIORITY_CS4),
-            ),
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None),
             unsubscribe_request,
         )
         .await
@@ -621,13 +611,7 @@ mod tests {
         let expected_topic = test_lib::helpers::remote_topic1_uri();
         let expected_method = make_remote_subscribe_uuri(&expected_topic);
         let expected_subscriber = test_lib::helpers::local_usubscription_service_uri();
-        let expected_message_id = UUID::build();
-        let expected_options = CallOptions::for_rpc_request(
-            UP_REMOTE_TTL,
-            Some(expected_message_id),
-            None,
-            Some(UPriority::UPRIORITY_CS4),
-        );
+        let expected_options = CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None);
         let expected_request = SubscriptionRequest {
             topic: Some(expected_topic.clone()).into(),
             subscriber: Some(SubscriberInfo {
@@ -684,12 +668,7 @@ mod tests {
         let expected_method = make_remote_unsubscribe_uuri(&expected_topic);
         let expected_subscriber = test_lib::helpers::local_usubscription_service_uri();
 
-        let expected_options = CallOptions::for_rpc_request(
-            UP_REMOTE_TTL,
-            Some(UUID::build()),
-            None,
-            Some(UPriority::UPRIORITY_CS4),
-        );
+        let expected_options = CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None);
         let expected_request = UnsubscribeRequest {
             topic: Some(expected_topic.clone()).into(),
             subscriber: Some(SubscriberInfo {
