@@ -22,7 +22,8 @@ on:
       - main
   pull_request:
     paths:
-      - "src/**"
+      - "up-subscription/**"
+      - "up-subscription-cli/**"
       - "Cargo.*"
       - "deny.toml"
   workflow_call:
