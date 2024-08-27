@@ -19,6 +19,7 @@ mod tests {
     use std::sync::Arc;
     use test_case::test_case;
     use tokio::sync::{mpsc, mpsc::Sender, oneshot, Notify};
+    use up_rust::UPriority;
 
     use up_rust::core::usubscription::{
         FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
@@ -281,7 +282,8 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let remote_call_options = CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None);
+        let remote_call_options =
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender =
             CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
                 remote_method,
@@ -344,7 +346,8 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let remote_call_options = CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None);
+        let remote_call_options =
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender =
             CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
                 remote_method,
@@ -499,7 +502,8 @@ mod tests {
             code: UCode::OK.into(),
             ..Default::default()
         };
-        let remote_call_options = CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, None);
+        let remote_call_options =
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender = CommandSender::new_with_client_options::<UnsubscribeRequest, UStatus>(
             remote_method,
             remote_call_options,
