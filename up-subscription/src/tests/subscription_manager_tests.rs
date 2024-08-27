@@ -19,7 +19,6 @@ mod tests {
     use std::sync::Arc;
     use test_case::test_case;
     use tokio::sync::{mpsc, mpsc::Sender, oneshot, Notify};
-    use up_rust::UPriority;
 
     use up_rust::core::usubscription::{
         FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
@@ -28,7 +27,7 @@ mod tests {
     };
     use up_rust::{
         communication::{CallOptions, UPayload},
-        UCode, UStatus, UUri,
+        UCode, UPriority, UStatus, UUri,
     };
 
     use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;

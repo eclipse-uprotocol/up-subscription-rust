@@ -16,7 +16,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::{mpsc, oneshot, Notify};
-use up_rust::UPriority;
 
 use up_rust::{
     communication::CallOptions,
@@ -28,7 +27,7 @@ use up_rust::{
         RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
         USUBSCRIPTION_VERSION_MAJOR,
     },
-    UCode, UStatus, UUri,
+    UCode, UPriority, UStatus, UUri,
 };
 
 use crate::{helpers, usubscription::UP_REMOTE_TTL};
