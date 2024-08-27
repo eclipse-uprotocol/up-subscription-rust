@@ -25,7 +25,7 @@ mod tests {
             UnsubscribeRequest, UnsubscribeResponse, RESOURCE_ID_SUBSCRIBE,
             RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID, USUBSCRIPTION_VERSION_MAJOR,
         },
-        UCode, UPriority, UUri, UUID,
+        UCode, UPriority, UUri,
     };
 
     use crate::{
@@ -79,9 +79,9 @@ mod tests {
             };
             let expected_call_options = CallOptions::for_rpc_request(
                 crate::UP_REMOTE_TTL,
-                Some(UUID::new()),
                 None,
-                Some(UPriority::UPRIORITY_CS2),
+                None,
+                Some(UPriority::UPRIORITY_CS4),
             );
             let remote_subscription_request = SubscriptionRequest {
                 topic: Some(topic.clone()).into(),
@@ -199,9 +199,9 @@ mod tests {
             };
             let expected_call_options = CallOptions::for_rpc_request(
                 crate::UP_REMOTE_TTL,
-                Some(UUID::new()),
                 None,
-                Some(UPriority::UPRIORITY_CS2),
+                None,
+                Some(UPriority::UPRIORITY_CS4),
             );
             let remote_unsubscribe_request = UnsubscribeRequest {
                 topic: Some(topic.clone()).into(),

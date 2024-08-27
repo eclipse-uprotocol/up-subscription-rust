@@ -27,7 +27,7 @@ mod tests {
     };
     use up_rust::{
         communication::{CallOptions, UPayload},
-        UCode, UPriority, UStatus, UUri, UUID,
+        UCode, UPriority, UStatus, UUri,
     };
 
     use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;
@@ -281,12 +281,8 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let remote_call_options = CallOptions::for_rpc_request(
-            UP_REMOTE_TTL,
-            Some(UUID::new()),
-            None,
-            Some(UPriority::UPRIORITY_CS2),
-        );
+        let remote_call_options =
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender =
             CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
                 remote_method,
@@ -349,12 +345,8 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let remote_call_options = CallOptions::for_rpc_request(
-            UP_REMOTE_TTL,
-            Some(UUID::new()),
-            None,
-            Some(UPriority::UPRIORITY_CS2),
-        );
+        let remote_call_options =
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender =
             CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
                 remote_method,
@@ -509,12 +501,8 @@ mod tests {
             code: UCode::OK.into(),
             ..Default::default()
         };
-        let remote_call_options = CallOptions::for_rpc_request(
-            UP_REMOTE_TTL,
-            Some(UUID::new()),
-            None,
-            Some(UPriority::UPRIORITY_CS2),
-        );
+        let remote_call_options =
+            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender = CommandSender::new_with_client_options::<UnsubscribeRequest, UStatus>(
             remote_method,
             remote_call_options,
