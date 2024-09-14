@@ -244,15 +244,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-mutex"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "479db852db25d9dbf6204e6cb6253698f175c15726470f78af0d918e99d6156e"
-dependencies = [
- "event-listener 2.5.3",
-]
-
-[[package]]
 name = "async-process"
 version = "1.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3020,7 +3011,6 @@ dependencies = [
 name = "up-subscription"
 version = "0.1.1"
 dependencies = [
- "async-mutex",
  "async-trait",
  "env_logger",
  "futures",
@@ -3038,7 +3028,6 @@ dependencies = [
 name = "up-subscription-cli"
 version = "0.1.1"
 dependencies = [
- "async-mutex",
  "async-trait",
  "clap",
  "clap-num",

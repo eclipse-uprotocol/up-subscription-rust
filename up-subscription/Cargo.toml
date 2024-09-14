@@ -22,7 +22,6 @@ repository.workspace = true
 version.workspace = true
 
 [dependencies]
-async-mutex = { workspace = true }
 async-trait = { workspace = true }
 env_logger = { workspace = true }
 futures = { workspace = true }
