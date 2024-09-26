@@ -29,7 +29,6 @@ rust-version = "1.76.0"
 version = "0.1.1"
 
 [workspace.dependencies]
-async-mutex = { version = "1.4" }
 async-trait = { version = "0.1" }
 env_logger = { version = "0.11" }
 futures = { version = "0.3" }
