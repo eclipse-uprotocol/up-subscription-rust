@@ -34,11 +34,10 @@ mod tests {
         USubscriptionConfiguration, USubscriptionService,
     };
 
-    #[test_case(UUri::default(), SubscriberInfo::default(); "Default topic, Default SubscriberInfo")]
-    #[test_case(test_lib::helpers::local_topic1_uri(), SubscriberInfo::default(); "Good topic, Default SubscriberInfo")]
-    #[test_case(UUri::default(), test_lib::helpers::subscriber_info1(); "Default topic, good SubscriberInfo")]
+    #[test_case(UUri::default(); "Default topic")]
+    #[test_case(test_lib::helpers::local_topic1_uri(); "Good topic")]
     #[tokio::test]
-    async fn test_subscribe_input_validation(topic: UUri, subscriber: SubscriberInfo) {
+    async fn test_subscribe_input_validation(topic: UUri) {
         helpers::init_once();
 
         // Prepare things
@@ -46,7 +45,6 @@ mod tests {
 
         let subscription_request = SubscriptionRequest {
             topic: Some(topic).into(),
-            subscriber: Some(subscriber).into(),
             ..Default::default()
         };
 
@@ -85,11 +83,6 @@ mod tests {
             );
             let remote_subscription_request = SubscriptionRequest {
                 topic: Some(topic.clone()).into(),
-                subscriber: Some(SubscriberInfo {
-                    uri: Some(test_lib::helpers::local_usubscription_service_uri()).into(),
-                    ..Default::default()
-                })
-                .into(),
                 ..Default::default()
             };
             let expected_payload =
@@ -129,7 +122,6 @@ mod tests {
 
         let subscription_request = SubscriptionRequest {
             topic: Some(topic.clone()).into(),
-            subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
             ..Default::default()
         };
 
@@ -154,11 +146,10 @@ mod tests {
         assert_eq!(notification_status.state.unwrap(), state);
     }
 
-    #[test_case(UUri::default(), SubscriberInfo::default(); "Default topic, Default SubscriberInfo")]
-    #[test_case(test_lib::helpers::local_topic1_uri(), SubscriberInfo::default(); "Good topic, Default SubscriberInfo")]
-    #[test_case(UUri::default(), test_lib::helpers::subscriber_info1(); "Default topic, good SubscriberInfo")]
+    #[test_case(UUri::default(); "Default topic")]
+    #[test_case(test_lib::helpers::local_topic1_uri(); "Good topic")]
     #[tokio::test]
-    async fn test_unsubscribe_input_validation(topic: UUri, subscriber: SubscriberInfo) {
+    async fn test_unsubscribe_input_validation(topic: UUri) {
         helpers::init_once();
 
         // Prepare things
@@ -166,7 +157,6 @@ mod tests {
 
         let unsubscribe_request = UnsubscribeRequest {
             topic: Some(topic).into(),
-            subscriber: Some(subscriber).into(),
             ..Default::default()
         };
 
@@ -205,11 +195,6 @@ mod tests {
             );
             let remote_unsubscribe_request = UnsubscribeRequest {
                 topic: Some(topic.clone()).into(),
-                subscriber: Some(SubscriberInfo {
-                    uri: Some(test_lib::helpers::local_usubscription_service_uri()).into(),
-                    ..Default::default()
-                })
-                .into(),
                 ..Default::default()
             };
             let expected_payload = UPayload::try_from_protobuf(remote_unsubscribe_request).unwrap();
@@ -240,7 +225,6 @@ mod tests {
 
         let unsubscribe_request = UnsubscribeRequest {
             topic: Some(topic.clone()).into(),
-            subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
             ..Default::default()
         };
 
@@ -264,16 +248,12 @@ mod tests {
         assert_eq!(notification_status.state.unwrap(), State::UNSUBSCRIBED);
     }
 
-    #[test_case(UUri::default(), SubscriberInfo::default(); "Default topic, Default SubscriberInfo")]
-    #[test_case(test_lib::helpers::notification_topic_uri(), SubscriberInfo::default(); "Good topic, Default SubscriberInfo")]
-    #[test_case(test_lib::helpers::remote_topic1_uri(), SubscriberInfo::default(); "Remote topic, Default SubscriberInfo")]
-    #[test_case(test_lib::helpers::remote_topic1_uri(), SubscriberInfo::default(); "Invalid topic, Default SubscriberInfo")]
-    #[test_case(UUri::default(), test_lib::helpers::subscriber_info1(); "Default topic, good SubscriberInfo")]
+    #[test_case(UUri::default(); "Default topic")]
+    #[test_case(test_lib::helpers::notification_topic_uri(); "Good topic")]
+    #[test_case(test_lib::helpers::remote_topic1_uri(); "Remote topic")]
+    #[test_case(test_lib::helpers::remote_topic1_uri(); "Invalid topic")]
     #[tokio::test]
-    async fn test_register_for_notifications_input_validation(
-        topic: UUri,
-        subscriber: SubscriberInfo,
-    ) {
+    async fn test_register_for_notifications_input_validation(topic: UUri) {
         helpers::init_once();
 
         // Prepare things
@@ -281,7 +261,6 @@ mod tests {
 
         let notification_request = NotificationsRequest {
             topic: Some(topic.clone()).into(),
-            subscriber: Some(subscriber).into(),
             ..Default::default()
         };
 
@@ -303,7 +282,6 @@ mod tests {
 
         let notification_request = NotificationsRequest {
             topic: Some(test_lib::helpers::notification_topic_uri()).into(),
-            subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
             ..Default::default()
         };
 
@@ -342,7 +320,6 @@ mod tests {
 
         let notification_request = NotificationsRequest {
             topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-            subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
             ..Default::default()
         };
 
@@ -378,32 +355,26 @@ mod tests {
     #[test_case(vec![], 0; "No subscription")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     }], 1; "1 subscription")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info2()).into(),
                         ..Default::default()
                     }], 2; "2 subscriptions")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info2()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic2_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     }], 2; "2 subscriptions for same topic, 1 irrelevant")]
     #[tokio::test]
@@ -461,72 +432,60 @@ mod tests {
     #[test_case(vec![], Request::Topic(test_lib::helpers::local_topic1_uri()), 0; "No subscription")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     }],
                     Request::Topic(test_lib::helpers::local_topic1_uri()),
                     1; "1 subscription, request by topic")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info2()).into(),
                         ..Default::default()
                     }],
                     Request::Topic(test_lib::helpers::local_topic1_uri()),
                     2; "2 subscriptions, request by topic")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info2()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic2_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     }],
                     Request::Topic(test_lib::helpers::local_topic1_uri()),
                     2; "2 subscriptions for same topic, 1 irrelevant, request by topic")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     }],
                     Request::Subscriber(test_lib::helpers::subscriber_info1()),
                     1; "1 subscription, request by subscriber")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic2_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     }],
                     Request::Subscriber(test_lib::helpers::subscriber_info1()),
                     2; "2 subscriptions, request by subscriber")]
     #[test_case(vec![SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info2()).into(),
                         ..Default::default()
                     },
                     SubscriptionRequest {
                         topic: Some(test_lib::helpers::local_topic2_uri()).into(),
-                        subscriber: Some(test_lib::helpers::subscriber_info2()).into(),
                         ..Default::default()
                     }],
                     Request::Subscriber(test_lib::helpers::subscriber_info2()),

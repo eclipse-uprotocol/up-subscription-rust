@@ -14,47 +14,46 @@
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use up_rust::core::usubscription::NotificationsRequest;
+use up_rust::core::usubscription::UnsubscribeRequest;
 use up_rust::{UCode, UListener, UMessage, UMessageBuilder, UStatus, UUID};
 
 use crate::usubscription::USubscriptionServiceAbstract;
 
 #[derive(Clone)]
-pub struct RegisterForNotificationsListener {
+pub struct UnsubscribeListener {
     up_subscription: Arc<dyn USubscriptionServiceAbstract>,
 }
 
-impl RegisterForNotificationsListener {
+impl UnsubscribeListener {
     pub fn new(up_subscription: Arc<dyn USubscriptionServiceAbstract>) -> Self {
-        RegisterForNotificationsListener { up_subscription }
+        UnsubscribeListener { up_subscription }
     }
 }
 
 #[async_trait]
-impl UListener for RegisterForNotificationsListener {
-    // Perform any business logic related to a `NotificationsRequest`
+impl UListener for UnsubscribeListener {
+    // Perform any business logic related to a `UnsubscribeRequest`
+    // Implements https://github.com/eclipse-uprotocol/up-spec/tree/main/up-l3/usubscription/v3#52-unsubscribe
     async fn on_receive(&self, msg: UMessage) {
-        let notifications_request: NotificationsRequest = msg
+        let unsubscribe_request: UnsubscribeRequest = msg
             .extract_protobuf()
-            .expect("Expected NotificationsRequest payload");
+            .expect("Expected UnsubscribeRequest payload");
 
         // 1. Check with backend
-        let message = match self
+        let status = match self
             .up_subscription
-            .register_for_notifications(notifications_request.clone())
+            .unsubscribe(unsubscribe_request.clone())
             .await
         {
-            Ok(()) => UMessageBuilder::response_for_request(msg.attributes.get_or_default())
-                .with_message_id(UUID::build())
-                .with_comm_status(UCode::OK)
-                .build_with_protobuf_payload(&UStatus::ok())
-                .expect("Error building response message"),
-            Err(status) => UMessageBuilder::response_for_request(msg.attributes.get_or_default())
-                .with_message_id(UUID::build())
-                .with_comm_status(status.code.enum_value_or(UCode::UNKNOWN))
-                .build_with_protobuf_payload(&status)
-                .expect("Error building response message"),
+            Ok(()) => UStatus::ok(),
+            Err(status) => status,
         };
+
+        let message = UMessageBuilder::response_for_request(msg.attributes.get_or_default())
+            .with_message_id(UUID::build())
+            .with_comm_status(status.code.enum_value_or(UCode::INTERNAL))
+            .build_with_protobuf_payload(&status)
+            .expect("Error building response message");
 
         // 2. Respond to caller
         self.up_subscription
@@ -72,7 +71,7 @@ mod tests {
 
     use up_rust::{
         core::usubscription::{
-            NotificationsResponse, RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS, USUBSCRIPTION_TYPE_ID,
+            UnsubscribeResponse, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
             USUBSCRIPTION_VERSION_MAJOR,
         },
         UStatus, UUri,
@@ -85,32 +84,29 @@ mod tests {
     // Test for two cases: 1) handling a usubscription Ok() Result, or 2) handling a usubscription Err() Result
 
     #[tokio::test]
-    async fn test_register_notification_listener_success() {
+    async fn test_unsubscribe_listener_success() {
         helpers::init_once();
-        let register_notifications_uri = UUri {
+        let unsubscribe_uri = UUri {
             authority_name: String::from("usubscription.mock"),
             ue_id: USUBSCRIPTION_TYPE_ID,
             ue_version_major: USUBSCRIPTION_VERSION_MAJOR as u32,
-            resource_id: RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS as u32,
+            resource_id: RESOURCE_ID_UNSUBSCRIBE as u32,
             ..Default::default()
         };
 
         // create request and matching expected response object(s)
-        let register_notifications_request = NotificationsRequest {
-            subscriber: Some(test_lib::helpers::subscriber_info1()).into(),
-            topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-            ..Default::default()
-        };
+        let unsubscribe_request =
+            test_lib::helpers::unsubscribe_request(test_lib::helpers::local_topic1_uri());
 
         // detailed content of this are actually irrelevant - we're not checking business logic here, just whether the object is passed through ok
-        let expected_response = NotificationsResponse::default();
+        let expected_response = UnsubscribeResponse::default();
 
         let listener_msg = UMessageBuilder::request(
-            register_notifications_uri,
+            unsubscribe_uri,
             UUri::from_str(test_lib::helpers::UENTITY_OWN_URI).unwrap(),
             usubscription::UP_REMOTE_TTL,
         )
-        .build_with_protobuf_payload(&register_notifications_request)
+        .build_with_protobuf_payload(&unsubscribe_request)
         .unwrap();
 
         // setup mock for send()ing back response
@@ -125,29 +121,29 @@ mod tests {
         let mut usubscription_mock =
             test_lib::mocks::usubscription_mock_for_listener_tests(expected_listener_reaction);
         usubscription_mock
-            .expect_register_for_notifications()
-            .with(eq(register_notifications_request))
+            .expect_unsubscribe()
+            .with(eq(unsubscribe_request))
             .return_const(Ok(()));
         let usubscription_arc: Arc<dyn USubscriptionServiceAbstract> = Arc::new(usubscription_mock);
 
         // create listener and perform tested operation
-        let listener = RegisterForNotificationsListener::new(usubscription_arc);
+        let listener = UnsubscribeListener::new(usubscription_arc);
         listener.on_receive(listener_msg).await;
     }
 
     #[tokio::test]
-    async fn test_register_notification_listener_failure() {
+    async fn test_unsubscribe_listener_failure() {
         helpers::init_once();
-        let register_notifications_uri = UUri {
+        let unsubscribe_uri = UUri {
             authority_name: String::from("usubscription.mock"),
             ue_id: USUBSCRIPTION_TYPE_ID,
             ue_version_major: USUBSCRIPTION_VERSION_MAJOR as u32,
-            resource_id: RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS as u32,
+            resource_id: RESOURCE_ID_UNSUBSCRIBE as u32,
             ..Default::default()
         };
 
         // create request and matching expected response object(s)
-        let register_notifications_request = NotificationsRequest::default();
+        let unsubscribe_request = UnsubscribeRequest::default();
 
         // detailed content of this are actually irrelevant - we're not checking business logic here, just whether the object is passed through ok
         let expected_response = UStatus {
@@ -156,11 +152,11 @@ mod tests {
         };
 
         let listener_msg = UMessageBuilder::request(
-            register_notifications_uri,
+            unsubscribe_uri,
             UUri::from_str(test_lib::helpers::UENTITY_OWN_URI).unwrap(),
             usubscription::UP_REMOTE_TTL,
         )
-        .build_with_protobuf_payload(&register_notifications_request)
+        .build_with_protobuf_payload(&unsubscribe_request)
         .unwrap();
 
         // setup mock for send()ing back response
@@ -175,13 +171,13 @@ mod tests {
         let mut usubscription_mock =
             test_lib::mocks::usubscription_mock_for_listener_tests(expected_listener_reaction);
         usubscription_mock
-            .expect_register_for_notifications()
-            .with(eq(register_notifications_request))
+            .expect_unsubscribe()
+            .with(eq(unsubscribe_request))
             .return_const(Err(expected_response));
         let usubscription_arc: Arc<dyn USubscriptionServiceAbstract> = Arc::new(usubscription_mock);
 
         // create listener and perform tested operation
-        let listener = RegisterForNotificationsListener::new(usubscription_arc);
+        let listener = UnsubscribeListener::new(usubscription_arc);
         listener.on_receive(listener_msg).await;
     }
 }

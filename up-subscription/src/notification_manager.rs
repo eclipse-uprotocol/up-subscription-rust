@@ -38,7 +38,7 @@ pub(crate) enum NotificationEvent {
         subscriber: UUri,
     },
     StateChange {
-        subscriber: SubscriberInfo,
+        subscriber: UUri,
         topic: UUri,
         status: SubscriptionStatus,
         respond_to: oneshot::Sender<()>,
@@ -99,7 +99,11 @@ pub(crate) async fn notification_engine(
             } => {
                 let update = Update {
                     topic: Some(topic).into(),
-                    subscriber: Some(subscriber.clone()).into(),
+                    subscriber: Some(SubscriberInfo {
+                        uri: Some(subscriber.clone()).into(),
+                        ..Default::default()
+                    })
+                    .into(),
                     status: Some(status).into(),
                     ..Default::default()
                 };

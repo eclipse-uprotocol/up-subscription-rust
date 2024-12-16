@@ -22,8 +22,7 @@ mod tests {
     };
 
     use up_rust::core::usubscription::{
-        usubscription_uri, State, SubscriberInfo, SubscriptionStatus, Update,
-        RESOURCE_ID_SUBSCRIPTION_CHANGE,
+        usubscription_uri, State, SubscriptionStatus, Update, RESOURCE_ID_SUBSCRIPTION_CHANGE,
     };
     use up_rust::{UMessage, UMessageBuilder, UUri, UUID};
 
@@ -73,7 +72,7 @@ mod tests {
 
         async fn state_change(
             &self,
-            subscriber: SubscriberInfo,
+            subscriber: UUri,
             topic: UUri,
             status: SubscriptionStatus,
         ) -> Result<(), Box<dyn Error>> {
@@ -211,7 +210,7 @@ mod tests {
         // operation to test
         let r = command_sender
             .state_change(
-                changing_subscriber.clone(),
+                changing_subscriber.uri.unwrap_or_default(),
                 changing_topic.clone(),
                 changing_status,
             )
@@ -295,7 +294,7 @@ mod tests {
         // operation to test
         let r = command_sender
             .state_change(
-                changing_subscriber.clone(),
+                changing_subscriber.uri.unwrap_or_default(),
                 changing_topic.clone(),
                 changing_status,
             )

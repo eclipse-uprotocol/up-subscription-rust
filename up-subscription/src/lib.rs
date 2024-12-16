@@ -48,21 +48,25 @@ pub use usubscription::*;
 mod usubscription;
 pub use configuration::{ConfigurationError, USubscriptionConfiguration};
 
-pub mod listeners {
-    pub mod fetch_subscribers;
-    pub mod fetch_subscriptions;
-    pub mod register_for_notifications;
+pub mod operations {
     pub mod subscribe;
-    pub mod unregister_for_notifications;
-    pub mod unsubscribe;
-
-    pub use fetch_subscribers::FetchSubscribersListener;
-    pub use fetch_subscriptions::FetchSubscriptionsListener;
-    pub use register_for_notifications::RegisterForNotificationsListener;
-    pub use subscribe::SubscribeListener;
-    pub use unregister_for_notifications::UnregisterForNotificationsListener;
-    pub use unsubscribe::UnsubscribeListener;
 }
+
+// pub mod listeners {
+//     pub mod fetch_subscribers;
+//     pub mod fetch_subscriptions;
+//     pub mod register_for_notifications;
+//     pub mod subscribe;
+//     pub mod unregister_for_notifications;
+//     pub mod unsubscribe;
+
+//     pub use fetch_subscribers::FetchSubscribersListener;
+//     pub use fetch_subscriptions::FetchSubscriptionsListener;
+//     pub use register_for_notifications::RegisterForNotificationsListener;
+//     pub use subscribe::SubscribeListener;
+//     pub use unregister_for_notifications::UnregisterForNotificationsListener;
+//     pub use unsubscribe::UnsubscribeListener;
+// }
 
 #[cfg(test)]
 mod tests;

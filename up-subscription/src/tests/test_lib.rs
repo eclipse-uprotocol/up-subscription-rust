@@ -64,8 +64,8 @@ pub(crate) mod mocks {
         LocalUriProvider, UListener, UMessage, UStatus, UTransport, UUri,
     };
 
-    use crate::{test_lib, USubscriptionConfiguration};
-    use crate::{USubscriptionService, USubscriptionServiceAbstract, UTransportHolder};
+    use crate::test_lib;
+    use crate::UTransportHolder;
 
     // UTransportMock for testing Notification functionality via implementation of the UTransport::send() method,
     // which mirrors recieved data back to an outside Receiver (which would be the calling test case).
@@ -167,6 +167,17 @@ pub(crate) mod mocks {
     }
 
     mock! {
+        pub(crate) LocalUriProvider {}
+
+        #[async_trait]
+        impl LocalUriProvider for LocalUriProvider {
+            fn get_authority(&self) -> String;
+            fn get_resource_uri(&self, resource_id: u16) -> UUri;
+            fn get_source_uri(&self) -> UUri;
+        }
+    }
+
+    mock! {
         pub(crate) RpcClientMock {}
 
         #[async_trait]
@@ -183,8 +194,6 @@ pub(crate) mod mocks {
 
     mock! {
         pub(crate) SubscriptionService {}
-
-        impl USubscriptionServiceAbstract for SubscriptionService {}
 
         impl UTransportHolder for SubscriptionService {
             fn get_transport(&self) -> Arc<dyn UTransport>;
@@ -222,30 +231,28 @@ pub(crate) mod mocks {
         }
     }
 
-    pub(crate) fn usubscription_default_mock(
-        do_send_count: usize,
-    ) -> Arc<dyn USubscriptionServiceAbstract> {
-        let mut mock_transport = MockTransport::default();
-        mock_transport
-            .expect_do_send()
-            .times(do_send_count)
-            .return_const(Ok(()));
+    // pub(crate) fn usubscription_default_mock(do_send_count: usize) -> Arc<USubscriptionService> {
+    //     let mut mock_transport = MockTransport::default();
+    //     mock_transport
+    //         .expect_do_send()
+    //         .times(do_send_count)
+    //         .return_const(Ok(()));
 
-        let mock_client = MockRpcClientMock::default();
-        let (urun, _) = USubscriptionService::run(
-            USubscriptionConfiguration::create(
-                test_lib::helpers::LOCAL_AUTHORITY.to_string(),
-                None,
-                None,
-            )
-            .unwrap(),
-            Arc::new(mock_transport),
-            Arc::new(mock_client),
-        )
-        .unwrap();
+    //     let mock_client = MockRpcClientMock::default();
+    //     let (urun, _) = USubscriptionService::run(
+    //         USubscriptionConfiguration::create(
+    //             test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+    //             None,
+    //             None,
+    //         )
+    //         .unwrap(),
+    //         Arc::new(mock_transport),
+    //         Arc::new(mock_client),
+    //     )
+    //     .unwrap();
 
-        urun
-    }
+    //     urun
+    // }
 
     pub(crate) fn usubscription_mock_for_listener_tests(
         send_return: UMessage,
@@ -287,6 +294,28 @@ pub(crate) mod mocks {
                 .withf(move |message| test_lib::is_equivalent_umessage(message, &expected_message))
                 .return_const(Ok(()));
         }
+
+        mock_transport
+    }
+
+    use up_rust::{UCode, UMessageBuilder};
+
+    pub(crate) fn utransport_mock_for_remote_subscription(
+        expected_request: UMessage,
+        expected_response: UMessage,
+    ) -> MockTransport {
+        let mut mock_transport = MockTransport::default();
+
+        mock_transport
+            .expect_do_send()
+            .once()
+            .withf(move |request| test_lib::is_equivalent_umessage(request, &expected_request))
+            .returning(move |expected_response: UMessage| {
+                // let captured_listener = captured_listener_rx.recv().unwrap().to_owned();
+                // tokio::spawn(async move { captured_listener.on_receive(response_message).await });
+
+                Ok(())
+            });
 
         mock_transport
     }
@@ -338,44 +367,53 @@ pub(crate) mod helpers {
 
     pub(crate) const UENTITY_OWN_URI: &str = "/7777/1/0";
 
+    pub(crate) fn subscriber_uri1() -> UUri {
+        UUri {
+            authority_name: LOCAL_AUTHORITY.into(),
+            ue_id: SUBSCRIBER1_ID,
+            ue_version_major: SUBSCRIBER1_VERSION,
+            resource_id: SUBSCRIBER1_RESOURCE,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn subscriber_uri2() -> UUri {
+        UUri {
+            authority_name: LOCAL_AUTHORITY.into(),
+            ue_id: SUBSCRIBER2_ID,
+            ue_version_major: SUBSCRIBER2_VERSION,
+            resource_id: SUBSCRIBER2_RESOURCE,
+            ..Default::default()
+        }
+    }
+
+    pub(crate) fn subscriber_uri3() -> UUri {
+        UUri {
+            authority_name: LOCAL_AUTHORITY.into(),
+            ue_id: SUBSCRIBER3_ID,
+            ue_version_major: SUBSCRIBER3_VERSION,
+            resource_id: SUBSCRIBER3_RESOURCE,
+            ..Default::default()
+        }
+    }
+
     pub(crate) fn subscriber_info1() -> SubscriberInfo {
         SubscriberInfo {
-            uri: Some(UUri {
-                authority_name: LOCAL_AUTHORITY.into(),
-                ue_id: SUBSCRIBER1_ID,
-                ue_version_major: SUBSCRIBER1_VERSION,
-                resource_id: SUBSCRIBER1_RESOURCE,
-                ..Default::default()
-            })
-            .into(),
+            uri: Some(subscriber_uri1()).into(),
             ..Default::default()
         }
     }
 
     pub(crate) fn subscriber_info2() -> SubscriberInfo {
         SubscriberInfo {
-            uri: Some(UUri {
-                authority_name: LOCAL_AUTHORITY.into(),
-                ue_id: SUBSCRIBER2_ID,
-                ue_version_major: SUBSCRIBER2_VERSION,
-                resource_id: SUBSCRIBER2_RESOURCE,
-                ..Default::default()
-            })
-            .into(),
+            uri: Some(subscriber_uri2()).into(),
             ..Default::default()
         }
     }
 
     pub(crate) fn subscriber_info3() -> SubscriberInfo {
         SubscriberInfo {
-            uri: Some(UUri {
-                authority_name: LOCAL_AUTHORITY.into(),
-                ue_id: SUBSCRIBER3_ID,
-                ue_version_major: SUBSCRIBER3_VERSION,
-                resource_id: SUBSCRIBER3_RESOURCE,
-                ..Default::default()
-            })
-            .into(),
+            uri: Some(subscriber_uri2()).into(),
             ..Default::default()
         }
     }
@@ -439,24 +477,16 @@ pub(crate) mod helpers {
         }
     }
 
-    pub(crate) fn subscription_request(
-        topic: UUri,
-        subscriber: SubscriberInfo,
-    ) -> SubscriptionRequest {
+    pub(crate) fn subscription_request(topic: UUri) -> SubscriptionRequest {
         SubscriptionRequest {
             topic: Some(topic).into(),
-            subscriber: Some(subscriber).into(),
             ..Default::default()
         }
     }
 
-    pub(crate) fn unsubscribe_request(
-        topic: UUri,
-        subscriber: SubscriberInfo,
-    ) -> UnsubscribeRequest {
+    pub(crate) fn unsubscribe_request(topic: UUri) -> UnsubscribeRequest {
         UnsubscribeRequest {
             topic: Some(topic).into(),
-            subscriber: Some(subscriber).into(),
             ..Default::default()
         }
     }

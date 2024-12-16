@@ -13,13 +13,14 @@
 
 use log::*;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::{mpsc, oneshot, Notify};
+use up_rust::{LocalUriProvider, UTransport};
 
 use up_rust::{
     communication::CallOptions,
-    communication::RpcClient,
     core::usubscription::{
         FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
         FetchSubscriptionsResponse, Request, State as TopicState, SubscriberInfo, Subscription,
@@ -27,9 +28,12 @@ use up_rust::{
         RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
         USUBSCRIPTION_VERSION_MAJOR,
     },
-    UCode, UPriority, UStatus, UUri,
+    UCode, UPriority, UStatus, UUri, UUID,
 };
 
+use up_rust::communication::{InMemoryRpcClient, RpcClient};
+
+use crate::USubscriptionConfiguration;
 use crate::{helpers, usubscription::UP_REMOTE_TTL};
 
 // This is the core business logic for handling and tracking subscriptions. It is currently implemented as a single event-consuming
@@ -46,12 +50,12 @@ const UP_MAX_FETCH_SUBSCRIPTIONS_LEN: usize = 100;
 #[derive(Debug)]
 pub(crate) enum SubscriptionEvent {
     AddSubscription {
-        subscriber: SubscriberInfo,
+        subscriber: UUri,
         topic: UUri,
         respond_to: oneshot::Sender<SubscriptionStatus>,
     },
     RemoveSubscription {
-        subscriber: SubscriberInfo,
+        subscriber: UUri,
         topic: UUri,
         respond_to: oneshot::Sender<SubscriptionStatus>,
     },
@@ -66,12 +70,12 @@ pub(crate) enum SubscriptionEvent {
     // Purely for use during testing: get copy of current topic-subscriper ledger
     #[cfg(test)]
     GetTopicSubscribers {
-        respond_to: oneshot::Sender<HashMap<UUri, HashSet<SubscriberInfo>>>,
+        respond_to: oneshot::Sender<HashMap<UUri, HashSet<UUri>>>,
     },
     // Purely for use during testing: force-set new topic-subscriber ledger
     #[cfg(test)]
     SetTopicSubscribers {
-        topic_subscribers_replacement: HashMap<UUri, HashSet<SubscriberInfo>>,
+        topic_subscribers_replacement: HashMap<UUri, HashSet<UUri>>,
         respond_to: oneshot::Sender<()>,
     },
     // Purely for use during testing: get copy of current topic-subscriper ledger
@@ -101,8 +105,8 @@ enum Event {
 // Core business logic of subscription management - includes container data types for tracking subscriptions and remote subscriptions.
 // Interfacing with this purely works via channels, so we do not have to deal with mutexes and similar concepts.
 pub(crate) async fn handle_message(
-    own_uri: UUri,
-    up_client: Arc<dyn RpcClient>,
+    uri_provider: Arc<USubscriptionConfiguration>,
+    transport: Arc<dyn UTransport>,
     mut command_receiver: Receiver<SubscriptionEvent>,
     shutdown: Arc<Notify>,
 ) {
@@ -110,7 +114,7 @@ pub(crate) async fn handle_message(
 
     // track subscribers for topics - if you're in this list, you have SUBSCRIBED, otherwise you're considered UNSUBSCRIBED
     #[allow(clippy::mutable_key_type)]
-    let mut topic_subscribers: HashMap<UUri, HashSet<SubscriberInfo>> = HashMap::new();
+    let mut topic_subscribers: HashMap<UUri, HashSet<UUri>> = HashMap::new();
 
     // for remote topics, we need to additionally deal with _PENDING states, this tracks states of these topics
     #[allow(clippy::mutable_key_type)]
@@ -155,7 +159,7 @@ pub(crate) async fn handle_message(
 
                     let mut state = TopicState::SUBSCRIBED; // everything in topic_subscribers is considered SUBSCRIBED by default
 
-                    if topic.is_remote_authority(&own_uri) {
+                    if topic.is_remote_authority(&uri_provider.authority_name) {
                         // for remote_topics, we explicitly track state due to the _PENDING scenarios
                         state = *remote_topics
                             .get(&topic)
@@ -164,15 +168,15 @@ pub(crate) async fn handle_message(
                         remote_topics.entry(topic.clone()).or_insert(state);
                         if is_new {
                             // this is the first subscriber to this (remote) topic, so perform remote subscription
-                            let own_uri_clone = own_uri.clone();
-                            let up_client_clone = up_client.clone();
+                            let uri_provider_clone = uri_provider.clone();
+                            let transport_clone = transport.clone();
                             let remote_sub_sender_clone = remote_sub_sender.clone();
 
                             helpers::spawn_and_log_error(async move {
                                 remote_subscribe(
-                                    own_uri_clone,
                                     topic,
-                                    up_client_clone,
+                                    uri_provider_clone,
+                                    transport_clone,
                                     remote_sub_sender_clone,
                                 )
                                 .await?;
@@ -200,7 +204,7 @@ pub(crate) async fn handle_message(
                         entry.remove(&subscriber);
 
                         // if topic is remote, we were tracking this remote topic already, and this was the last subscriber
-                        if topic.is_remote_authority(&own_uri)
+                        if topic.is_remote_authority(&uri_provider.authority_name)
                             && remote_topics.contains_key(&topic)
                             && entry.is_empty()
                         {
@@ -210,16 +214,16 @@ pub(crate) async fn handle_message(
                             }
 
                             // this was the last subscriber to this (remote) topic, so perform remote unsubscription
-                            let own_uri_clone = own_uri.clone();
-                            let up_client_clone = up_client.clone();
+                            let topic_clone = topic.clone();
+                            let uri_provider_clone = uri_provider.clone();
+                            let transport_clone = transport.clone();
                             let remote_sub_sender_clone = remote_sub_sender.clone();
-                            let topic_cloned = topic.clone();
 
                             helpers::spawn_and_log_error(async move {
                                 remote_unsubscribe(
-                                    own_uri_clone,
-                                    topic_cloned,
-                                    up_client_clone,
+                                    topic_clone,
+                                    uri_provider_clone,
+                                    transport_clone,
                                     remote_sub_sender_clone,
                                 )
                                 .await?;
@@ -252,7 +256,7 @@ pub(crate) async fn handle_message(
                     // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
                     // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
                     if let Some(subs) = topic_subscribers.get(&topic) {
-                        let mut subscribers: Vec<&SubscriberInfo> = subs.iter().collect();
+                        let mut subscribers: Vec<&UUri> = subs.iter().collect();
 
                         if let Some(offset) = offset {
                             subscribers.drain(..offset as usize);
@@ -265,9 +269,17 @@ pub(crate) async fn handle_message(
                             has_more = true;
                         }
 
+                        let mut subscriber_infos: Vec<SubscriberInfo> = Vec::new();
+                        for subscriber_uri in subscribers {
+                            subscriber_infos.push(SubscriberInfo {
+                                uri: Some(subscriber_uri.clone()).into(),
+                                ..Default::default()
+                            });
+                        }
+
                         if respond_to
                             .send(FetchSubscribersResponse {
-                                subscribers: subscribers.iter().map(|s| (*s).clone()).collect(),
+                                subscribers: subscriber_infos,
                                 has_more_records: has_more.into(),
                                 ..Default::default()
                             })
@@ -297,11 +309,10 @@ pub(crate) async fn handle_message(
                                 // This is where someone wants "all subscriptions of a specific subscriber",
                                 // which isn't very straighforward with the way we do bookeeping, so
                                 // first, get all entries from our topic-subscribers ledger that contain the requested SubscriberInfo
-                                let subscriptions: Vec<(&UUri, &HashSet<SubscriberInfo>)> =
-                                    topic_subscribers
-                                        .iter()
-                                        .filter(|entry| entry.1.contains(&subscriber))
-                                        .collect();
+                                let subscriptions: Vec<(&UUri, &HashSet<UUri>)> = topic_subscribers
+                                    .iter()
+                                    .filter(|entry| entry.1.contains(&subscriber.uri))
+                                    .collect();
 
                                 // from that set, we use the topics and build Subscription response objects
                                 let mut result_subs: Vec<Subscription> = Vec::new();
@@ -344,8 +355,7 @@ pub(crate) async fn handle_message(
                             }
                             Request::Topic(topic) => {
                                 if let Some(subs) = topic_subscribers.get(&topic) {
-                                    let mut subscribers: Vec<&SubscriberInfo> =
-                                        subs.iter().collect();
+                                    let mut subscribers: Vec<&UUri> = subs.iter().collect();
 
                                     if let Some(offset) = offset {
                                         subscribers.drain(..offset as usize);
@@ -369,7 +379,11 @@ pub(crate) async fn handle_message(
 
                                         let subscription = Subscription {
                                             topic: Some(topic.clone()).into(),
-                                            subscriber: Some(subscriber.clone()).into(),
+                                            subscriber: Some(SubscriberInfo {
+                                                uri: Some(subscriber.clone()).into(),
+                                                ..Default::default()
+                                            })
+                                            .into(),
                                             status: Some(SubscriptionStatus {
                                                 state: (*state).into(),
                                                 ..Default::default()
@@ -433,24 +447,25 @@ pub(crate) async fn handle_message(
 
 // Perform remote topic subscription
 async fn remote_subscribe(
-    own_uri: UUri,
     topic: UUri,
-    up_client: Arc<dyn RpcClient>,
+    uri_provider: Arc<dyn LocalUriProvider>,
+    transport: Arc<dyn UTransport>,
     remote_sub_sender: mpsc::UnboundedSender<RemoteSubscriptionEvent>,
 ) -> Result<(), UStatus> {
+    let rpc_client: Arc<dyn RpcClient> = Arc::new(
+        InMemoryRpcClient::new(transport, uri_provider)
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?,
+    );
+
     // build request
     let subscription_request = SubscriptionRequest {
         topic: Some(topic.clone()).into(),
-        subscriber: Some(SubscriberInfo {
-            uri: Some(own_uri.clone()).into(),
-            ..Default::default()
-        })
-        .into(),
         ..Default::default()
     };
 
     // send request
-    let subscription_response: SubscriptionResponse = up_client
+    let subscription_response: SubscriptionResponse = rpc_client
         .invoke_proto_method(
             make_remote_subscribe_uuri(&subscription_request.topic),
             CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4)),
@@ -481,24 +496,25 @@ async fn remote_subscribe(
 
 // Perform remote topic unsubscription
 async fn remote_unsubscribe(
-    own_uri: UUri,
     topic: UUri,
-    up_client: Arc<dyn RpcClient>,
+    uri_provider: Arc<dyn LocalUriProvider>,
+    transport: Arc<dyn UTransport>,
     remote_sub_sender: mpsc::UnboundedSender<RemoteSubscriptionEvent>,
 ) -> Result<(), UStatus> {
+    let rpc_client: Arc<dyn RpcClient> = Arc::new(
+        InMemoryRpcClient::new(transport, uri_provider)
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?,
+    );
+
     // build request
     let unsubscribe_request = UnsubscribeRequest {
         topic: Some(topic.clone()).into(),
-        subscriber: Some(SubscriberInfo {
-            uri: Some(own_uri.clone()).into(),
-            ..Default::default()
-        })
-        .into(),
         ..Default::default()
     };
 
     // send request
-    let unsubscribe_response: UStatus = up_client
+    let unsubscribe_response: UStatus = rpc_client
         .invoke_proto_method(
             make_remote_unsubscribe_uuri(&unsubscribe_request.topic),
             CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4)),
@@ -565,9 +581,12 @@ mod tests {
     use super::*;
     use protobuf::MessageFull;
 
-    use up_rust::communication::UPayload;
+    use up_rust::{communication::UPayload, UMessage, UMessageBuilder};
 
-    use crate::test_lib::{self, mocks::MockRpcClientMock};
+    use crate::test_lib::{
+        self,
+        mocks::{MockLocalUriProvider, MockRpcClientMock, MockTransport},
+    };
 
     fn get_client_mock<R: MessageFull, S: MessageFull>(
         expected_method: UUri,
@@ -593,6 +612,19 @@ mod tests {
         client_mock
     }
 
+    fn get_uri_provider_mock() -> MockLocalUriProvider {
+        let provider_mock = MockLocalUriProvider::new();
+        provider_mock
+    }
+
+    fn get_transport_mock() -> MockTransport {
+        let mut transport_mock = MockTransport::new();
+
+        // transport_mock.s
+
+        transport_mock
+    }
+
     #[tokio::test]
     async fn test_remote_subscribe() {
         helpers::init_once();
@@ -600,16 +632,10 @@ mod tests {
         // prepare things
         let expected_topic = test_lib::helpers::remote_topic1_uri();
         let expected_method = make_remote_subscribe_uuri(&expected_topic);
-        let expected_subscriber = test_lib::helpers::local_usubscription_service_uri();
         let expected_options =
             CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let expected_request = SubscriptionRequest {
             topic: Some(expected_topic.clone()).into(),
-            subscriber: Some(SubscriberInfo {
-                uri: Some(expected_subscriber).into(),
-                ..Default::default()
-            })
-            .into(),
             ..Default::default()
         };
         let expected_response = SubscriptionResponse {
@@ -622,21 +648,41 @@ mod tests {
             ..Default::default()
         };
 
+        let request_msg = UMessageBuilder::request(
+            expected_method,
+            UUri::from_str(test_lib::helpers::UENTITY_OWN_URI).unwrap(),
+            crate::usubscription::UP_REMOTE_TTL,
+        )
+        .build_with_protobuf_payload(&expected_request)
+        .unwrap();
+
+        let response_msg =
+            UMessageBuilder::response_for_request(request_msg.attributes.get_or_default())
+                .with_comm_status(UCode::OK)
+                .with_message_id(UUID::build())
+                .build_with_protobuf_payload(&expected_response)
+                .expect("Error building response message");
+
+        let transport_mock =
+            test_lib::mocks::utransport_mock_for_remote_subscription(request_msg, response_msg);
+
         let (sender, mut receiver) = mpsc::unbounded_channel::<RemoteSubscriptionEvent>();
 
         // perform operation to test
         let result = remote_subscribe(
-            test_lib::helpers::local_usubscription_service_uri(),
             expected_topic.clone(),
-            Arc::new(get_client_mock(
-                expected_method,
-                expected_options,
-                expected_request,
-                expected_response,
-            )),
+            Arc::new(get_uri_provider_mock()),
+            Arc::new(transport_mock),
             sender,
         )
         .await;
+
+        // get_client_mock(
+        //     expected_method,
+        //     expected_options,
+        //     expected_request,
+        //     expected_response,
+        // )
 
         // validate response
         assert!(result.is_ok());
@@ -657,17 +703,11 @@ mod tests {
         // prepare things
         let expected_topic = test_lib::helpers::remote_topic1_uri();
         let expected_method = make_remote_unsubscribe_uuri(&expected_topic);
-        let expected_subscriber = test_lib::helpers::local_usubscription_service_uri();
 
         let expected_options =
             CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let expected_request = UnsubscribeRequest {
             topic: Some(expected_topic.clone()).into(),
-            subscriber: Some(SubscriberInfo {
-                uri: Some(expected_subscriber).into(),
-                ..Default::default()
-            })
-            .into(),
             ..Default::default()
         };
         let expected_response = UStatus {
@@ -678,15 +718,10 @@ mod tests {
         let (sender, mut receiver) = mpsc::unbounded_channel::<RemoteSubscriptionEvent>();
 
         // perform operation to test
-        let result = remote_unsubscribe(
-            test_lib::helpers::local_usubscription_service_uri(),
+        let result: Result<(), UStatus> = remote_unsubscribe(
             expected_topic.clone(),
-            Arc::new(get_client_mock(
-                expected_method,
-                expected_options,
-                expected_request,
-                expected_response,
-            )),
+            Arc::new(get_uri_provider_mock()),
+            Arc::new(get_transport_mock()),
             sender,
         )
         .await;
