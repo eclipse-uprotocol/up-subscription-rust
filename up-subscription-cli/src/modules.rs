@@ -11,12 +11,17 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-#[cfg(feature = "zenoh")]
-mod zenoh;
-#[cfg(feature = "zenoh")]
-pub(crate) use zenoh::get_zenoh_handlers;
+#[cfg(feature = "mqtt5")]
+mod mqtt5;
+#[cfg(feature = "mqtt5")]
+pub(crate) use mqtt5::get_mqtt5_handler;
 
 #[cfg(feature = "socket")]
 mod socket;
 #[cfg(feature = "socket")]
-pub(crate) use socket::get_socket_handlers;
+pub(crate) use socket::get_socket_handler;
+
+#[cfg(feature = "zenoh")]
+mod zenoh;
+#[cfg(feature = "zenoh")]
+pub(crate) use zenoh::get_zenoh_handler;

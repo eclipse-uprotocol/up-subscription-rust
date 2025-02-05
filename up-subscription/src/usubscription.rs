@@ -11,40 +11,37 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use async_trait::async_trait;
-use log::*;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::{
     sync::{
-        mpsc::{self, Sender},
-        oneshot, Notify,
+        mpsc::{self},
+        Notify,
     },
     task::JoinHandle,
 };
 
 use crate::{
+    handlers::{
+        fetch_subscribers::FetchSubscribersRequestHandler,
+        fetch_subscriptions::FetchSubscriptionsRequestHandler,
+        register_for_notifications::RegisterNotificationsRequestHandler,
+        subscribe::SubscriptionRequestHandler,
+        unregister_for_notifications::UnregisterNotificationsRequestHandler,
+        unsubscribe::UnubscribeRequestHandler,
+    },
     helpers,
     notification_manager::{self, NotificationEvent},
     subscription_manager::{self, SubscriptionEvent},
     USubscriptionConfiguration,
 };
 
-use up_rust::{communication::RpcClient, LocalUriProvider, UCode, UStatus, UTransport, UUri};
 use up_rust::{
+    communication::{InMemoryRpcServer, RpcServer},
     core::usubscription::{
-        FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
-        FetchSubscriptionsResponse, NotificationsRequest, Request, SubscriptionRequest,
-        SubscriptionResponse, SubscriptionStatus, USubscription, UnsubscribeRequest,
-        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_FETCH_SUBSCRIPTIONS,
-        RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_SUBSCRIBE,
-        RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
+        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
+        RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
     },
-    UAttributes,
-};
-
-use up_rust::communication::{
-    InMemoryRpcServer, RequestHandler, RpcServer, ServiceInvocationError, UPayload,
+    UCode, UStatus, UTransport, UUri,
 };
 
 /// Whether to include 'up:' uProtocol schema prefix in URIs in log and error messages
@@ -100,24 +97,18 @@ impl USubscriptionStopper {
 /// - interaction with / orchestration of backends for managing subscriptions (`usubscription_manager.rs`) and dealing with notifications (`usubscription_notification.rs`)
 #[derive(Clone)]
 pub struct USubscriptionService {
-    config: Arc<USubscriptionConfiguration>,
-    server: Arc<InMemoryRpcServer>,
-
+    _config: Arc<USubscriptionConfiguration>,
     transport: Arc<dyn UTransport>,
-    subscription_sender: Sender<SubscriptionEvent>,
-    // notification_sender: Sender<notification_manager::NotificationEvent>,
 }
 
 impl USubscriptionService {
-    pub fn run(
-        config: USubscriptionConfiguration,
+    pub async fn run(
+        config: Arc<USubscriptionConfiguration>,
         transport: Arc<dyn UTransport>,
-    ) -> Result<(Arc<USubscriptionService>, USubscriptionStopper), UStatus> {
+    ) -> Result<USubscriptionStopper, UStatus> {
         helpers::init_once();
 
-        let config = Arc::new(config);
         let server = Arc::new(InMemoryRpcServer::new(transport.clone(), config.clone()));
-
         let shutdown_notification = Arc::new(Notify::new());
 
         // Set up subscription manager actor
@@ -137,61 +128,100 @@ impl USubscriptionService {
             Ok(())
         });
 
-        Ok((
-            Arc::new(USubscriptionService {
-                config,
-                transport,
-                server,
-                subscription_sender,
-            }),
-            USubscriptionStopper {
-                subscription_joiner: Some(subscription_joiner),
-                // notification_joiner: Some(notification_joiner),
-                notification_joiner: None,
-                shutdown_notification,
-            },
-        ))
-    }
-}
+        // Set up notification manager actor
+        let transport_cloned = transport.clone();
+        let shutdown_notification_cloned = shutdown_notification.clone();
+        let (notification_sender, notification_receiver) =
+            mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
+        let notification_joiner = helpers::spawn_and_log_error(async move {
+            notification_manager::notification_engine(
+                transport_cloned,
+                notification_receiver,
+                shutdown_notification_cloned,
+            )
+            .await;
+            Ok(())
+        });
 
-struct USubscriptionRequestHandler;
+        // Link up request handlers
+        let subscription_request_handler = Arc::new(SubscriptionRequestHandler::new(
+            Arc::new(subscription_sender.clone()),
+            Arc::new(notification_sender.clone()),
+        ));
+        server
+            .register_endpoint(
+                Some(&UUri::any()),
+                RESOURCE_ID_SUBSCRIBE,
+                subscription_request_handler,
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-#[async_trait]
-impl RequestHandler for USubscriptionRequestHandler {
-    async fn handle_request(
-        &self,
-        resource_id: u16,
-        message_attributes: &UAttributes,
-        request_payload: Option<UPayload>,
-    ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        let Some(payload) = request_payload else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request payload".to_string(),
-            ));
-        };
+        let unsubscribe_request_handler = Arc::new(UnubscribeRequestHandler::new(
+            Arc::new(subscription_sender.clone()),
+            Arc::new(notification_sender.clone()),
+        ));
+        server
+            .register_endpoint(
+                Some(&UUri::any()),
+                RESOURCE_ID_UNSUBSCRIBE,
+                unsubscribe_request_handler,
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-        match resource_id {
-            RESOURCE_ID_SUBSCRIBE => {
-                let subscription_request: SubscriptionRequest =
-                    payload.extract_protobuf().map_err(|e| {
-                        ServiceInvocationError::InvalidArgument(
-                            "Expected SubscriptionRequest payload".to_string(),
-                        )
-                    })?;
+        let register_notification_handler = Arc::new(RegisterNotificationsRequestHandler::new(
+            Arc::new(notification_sender.clone()),
+        ));
+        server
+            .register_endpoint(
+                Some(&UUri::any()),
+                RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
+                register_notification_handler,
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-                let source = message_attributes.source.get_or_default();
+        let unregister_notification_handler = Arc::new(UnregisterNotificationsRequestHandler::new(
+            Arc::new(notification_sender.clone()),
+        ));
+        server
+            .register_endpoint(
+                Some(&UUri::any()),
+                RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
+                unregister_notification_handler,
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-                // Need message source UUri here
-            }
+        let fetch_subscribers_handler = Arc::new(FetchSubscribersRequestHandler::new(Arc::new(
+            subscription_sender.clone(),
+        )));
+        server
+            .register_endpoint(
+                Some(&UUri::any()),
+                RESOURCE_ID_FETCH_SUBSCRIBERS,
+                fetch_subscribers_handler,
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-            RESOURCE_ID_UNSUBSCRIBE => {}
-            RESOURCE_ID_FETCH_SUBSCRIBERS => {}
-            RESOURCE_ID_FETCH_SUBSCRIPTIONS => {}
-            RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS => {}
-            RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS => {}
-            _ => {}
-        }
+        let fetch_subscriptions_handler = Arc::new(FetchSubscriptionsRequestHandler::new(
+            Arc::new(subscription_sender.clone()),
+        ));
+        server
+            .register_endpoint(
+                Some(&UUri::any()),
+                RESOURCE_ID_FETCH_SUBSCRIBERS,
+                fetch_subscriptions_handler,
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-        todo!()
+        Ok(USubscriptionStopper {
+            subscription_joiner: Some(subscription_joiner),
+            notification_joiner: Some(notification_joiner),
+            shutdown_notification,
+        })
     }
 }

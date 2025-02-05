@@ -13,7 +13,6 @@
 
 use log::*;
 use std::collections::{HashMap, HashSet};
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc::Receiver;
 use tokio::sync::{mpsc, oneshot, Notify};
@@ -28,7 +27,7 @@ use up_rust::{
         RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
         USUBSCRIPTION_VERSION_MAJOR,
     },
-    UCode, UPriority, UStatus, UUri, UUID,
+    UCode, UPriority, UStatus, UUri,
 };
 
 use up_rust::communication::{InMemoryRpcClient, RpcClient};
@@ -579,65 +578,27 @@ mod tests {
     // tests of the susbcription manager business logic are located in tests/subscription_manager_tests.rs
 
     use super::*;
-    use protobuf::MessageFull;
+    use crate::test_lib::{self};
+    use up_rust::MockLocalUriProvider;
 
-    use up_rust::{communication::UPayload, UMessage, UMessageBuilder};
-
-    use crate::test_lib::{
-        self,
-        mocks::{MockLocalUriProvider, MockRpcClientMock, MockTransport},
-    };
-
-    fn get_client_mock<R: MessageFull, S: MessageFull>(
-        expected_method: UUri,
-        expected_options: CallOptions,
-        expected_request: R,
-        expected_response: S,
-    ) -> MockRpcClientMock {
-        let mut client_mock = MockRpcClientMock::new();
-
-        let expected_request_payload = UPayload::try_from_protobuf(expected_request).unwrap();
-        let expected_response_payload = UPayload::try_from_protobuf(expected_response).unwrap();
-
-        client_mock
-            .expect_invoke_method()
-            .once()
-            .withf(move |method, options, payload| {
-                *method == expected_method
-                    && test_lib::is_equivalent_calloptions(options, &expected_options)
-                    && *payload == Some(expected_request_payload.clone())
-            })
-            .return_const(Ok(Some(expected_response_payload)));
-
-        client_mock
-    }
-
-    fn get_uri_provider_mock() -> MockLocalUriProvider {
-        let provider_mock = MockLocalUriProvider::new();
-        provider_mock
-    }
-
-    fn get_transport_mock() -> MockTransport {
-        let mut transport_mock = MockTransport::new();
-
-        // transport_mock.s
-
-        transport_mock
+    fn get_mock_uri_provider(uri: UUri) -> MockLocalUriProvider {
+        let mut mock_provider = MockLocalUriProvider::new();
+        mock_provider.expect_get_source_uri().return_const(uri);
+        mock_provider
     }
 
     #[tokio::test]
     async fn test_remote_subscribe() {
         helpers::init_once();
-
-        // prepare things
         let expected_topic = test_lib::helpers::remote_topic1_uri();
-        let expected_method = make_remote_subscribe_uuri(&expected_topic);
-        let expected_options =
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
+
+        // build request
         let expected_request = SubscriptionRequest {
             topic: Some(expected_topic.clone()).into(),
             ..Default::default()
         };
+
+        // build response
         let expected_response = SubscriptionResponse {
             topic: Some(expected_topic.clone()).into(),
             status: Some(SubscriptionStatus {
@@ -648,41 +609,24 @@ mod tests {
             ..Default::default()
         };
 
-        let request_msg = UMessageBuilder::request(
-            expected_method,
-            UUri::from_str(test_lib::helpers::UENTITY_OWN_URI).unwrap(),
-            crate::usubscription::UP_REMOTE_TTL,
-        )
-        .build_with_protobuf_payload(&expected_request)
-        .unwrap();
-
-        let response_msg =
-            UMessageBuilder::response_for_request(request_msg.attributes.get_or_default())
-                .with_comm_status(UCode::OK)
-                .with_message_id(UUID::build())
-                .build_with_protobuf_payload(&expected_response)
-                .expect("Error building response message");
-
-        let transport_mock =
-            test_lib::mocks::utransport_mock_for_remote_subscription(request_msg, response_msg);
-
+        // set up mocks
+        let mock_uri_provider = Arc::new(get_mock_uri_provider(
+            test_lib::helpers::local_usubscription_service_uri(),
+        ));
+        let mock_transport = Arc::new(
+            test_lib::mocks::utransport_mock_for_rpc(vec![(expected_request, expected_response)])
+                .await,
+        );
         let (sender, mut receiver) = mpsc::unbounded_channel::<RemoteSubscriptionEvent>();
 
         // perform operation to test
         let result = remote_subscribe(
             expected_topic.clone(),
-            Arc::new(get_uri_provider_mock()),
-            Arc::new(transport_mock),
+            mock_uri_provider,
+            mock_transport,
             sender,
         )
         .await;
-
-        // get_client_mock(
-        //     expected_method,
-        //     expected_options,
-        //     expected_request,
-        //     expected_response,
-        // )
 
         // validate response
         assert!(result.is_ok());
@@ -699,29 +643,32 @@ mod tests {
     #[tokio::test]
     async fn test_remote_unsubscribe() {
         helpers::init_once();
-
-        // prepare things
         let expected_topic = test_lib::helpers::remote_topic1_uri();
-        let expected_method = make_remote_unsubscribe_uuri(&expected_topic);
 
-        let expected_options =
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
+        // build request
         let expected_request = UnsubscribeRequest {
             topic: Some(expected_topic.clone()).into(),
             ..Default::default()
         };
+
+        // build response
         let expected_response = UStatus {
             code: UCode::OK.into(),
             ..Default::default()
         };
 
+        // set up mocks
         let (sender, mut receiver) = mpsc::unbounded_channel::<RemoteSubscriptionEvent>();
+        let mock_transport = Arc::new(
+            test_lib::mocks::utransport_mock_for_rpc(vec![(expected_request, expected_response)])
+                .await,
+        );
 
         // perform operation to test
         let result: Result<(), UStatus> = remote_unsubscribe(
             expected_topic.clone(),
-            Arc::new(get_uri_provider_mock()),
-            Arc::new(get_transport_mock()),
+            Arc::new(get_mock_uri_provider(UUri::default())),
+            mock_transport,
             sender,
         )
         .await;

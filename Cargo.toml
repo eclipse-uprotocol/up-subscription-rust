@@ -13,7 +13,7 @@
 
 [workspace]
 exclude = [".vscode/*", ".github/*", "tools/*", ".gitignore", ".devcontainer/*"]
-members = ["up-subscription"]
+members = ["up-subscription", "up-subscription-cli"]
 resolver = "2"
 
 [workspace.package]
@@ -25,8 +25,8 @@ keywords = ["uProtocol", "uSubscription"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/eclipse-uprotocol/up-subscription-rust"
-rust-version = "1.76.0"
-version = "0.1.1"
+rust-version = "1.84.0"
+version = "0.2.0"
 
 [workspace.dependencies]
 async-trait = { version = "0.1" }
@@ -37,8 +37,7 @@ mockall = { version = "0.13" }
 protobuf = { version = "3.4" }
 test-case = { version = "3.3" }
 tokio = { version = "1", features = ["full"] }
-#up-rust = { version = "0.3", features = ["usubscription"] }
-up-rust = { path = "../up-rust", features = ["usubscription"] }
+up-rust = { version = "0.4.0", features = ["test-util", "usubscription"] }
 up-subscription = { path = "./up-subscription" }
 
 # Config for 'cargo dist'

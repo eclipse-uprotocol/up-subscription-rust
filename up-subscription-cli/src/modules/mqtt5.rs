@@ -14,29 +14,25 @@
 use std::sync::Arc;
 
 use up_rust::{LocalUriProvider, UTransport};
+use up_transport_mqtt5::{Mqtt5Transport, MqttClientOptions, TransportMode};
 
-use up_transport_zenoh::{zenoh_config, UPTransportZenoh};
-
-pub(crate) async fn get_zenoh_handler(
+pub(crate) async fn get_mqtt5_handler(
     uri_provider: Arc<dyn LocalUriProvider>,
 ) -> Option<Arc<dyn UTransport>> {
-    UPTransportZenoh::try_init_log_from_env();
+    let client_options = MqttClientOptions {
+        broker_uri: uri_provider.get_source_uri().to_string(),
+        ..Default::default()
+    };
 
-    // Load the config from file path
-    // Config Examples: https://github.com/eclipse-zenoh/zenoh/blob/0.10.1-rc/DEFAULT_CONFIG.json5
-    // zenoh_config::Config::from_file(path).unwrap()
+    if let Ok(client) = Mqtt5Transport::new(
+        TransportMode::InVehicle,
+        client_options,
+        uri_provider.get_authority(),
+    )
+    .await
+    {
+        return Some(Arc::new(client));
+    }
 
-    // Loat the default config struct
-    let mut zenoh_cfg = zenoh_config::Config::default();
-
-    // You can choose from Router, Peer, Client
-    zenoh_cfg.insert_json5("mode", "Peer").unwrap();
-
-    let transport = Arc::new(
-        UPTransportZenoh::new(zenoh_cfg, uri_provider.get_source_uri().to_string())
-            .await
-            .unwrap(),
-    );
-
-    Some(transport)
+    None
 }

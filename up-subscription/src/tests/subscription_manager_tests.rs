@@ -19,23 +19,18 @@ mod tests {
     use std::sync::Arc;
     use test_case::test_case;
     use tokio::sync::{mpsc, mpsc::Sender, oneshot, Notify};
+    use up_rust::MockTransport;
 
     use up_rust::core::usubscription::{
         FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
         FetchSubscriptionsResponse, Request, State, SubscriberInfo, SubscriptionRequest,
         SubscriptionResponse, SubscriptionStatus, UnsubscribeRequest,
     };
-    use up_rust::{
-        communication::{CallOptions, UPayload},
-        UCode, UPriority, UStatus, UUri,
-    };
+    use up_rust::{UCode, UStatus, UUri};
 
     use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;
-    use crate::subscription_manager::{
-        handle_message, make_remote_subscribe_uuri, make_remote_unsubscribe_uuri, SubscriptionEvent,
-    };
-    use crate::usubscription::UP_REMOTE_TTL;
-    use crate::{helpers, test_lib};
+    use crate::subscription_manager::{handle_message, SubscriptionEvent};
+    use crate::{helpers, test_lib, USubscriptionConfiguration};
 
     // Simple subscription-manager-actor front-end to use for testing
     struct CommandSender {
@@ -44,57 +39,59 @@ mod tests {
 
     impl CommandSender {
         fn new() -> Self {
+            let config = USubscriptionConfiguration::create(
+                test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+                None,
+                None,
+            )
+            .unwrap();
+            let transport_mock = MockTransport::default();
             let shutdown_notification = Arc::new(Notify::new());
-
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE);
-            let client_mock = test_lib::mocks::MockRpcClientMock::default();
+
             helpers::spawn_and_log_error(async move {
                 handle_message(
-                    test_lib::helpers::local_usubscription_service_uri(),
-                    Arc::new(client_mock),
+                    config.clone(),
+                    Arc::new(transport_mock),
                     command_receiver,
                     shutdown_notification,
                 )
                 .await;
+
                 Ok(())
             });
             CommandSender { command_sender }
         }
 
-        // Allows configuration of expected invoke_method() calls from subscription manager (i.e. in the context of remote subscribe/unsubscribe)
-        fn new_with_client_options<R: MessageFull, S: MessageFull>(
-            expected_remote_method: UUri,
-            expected_call_options: CallOptions,
+        // Allows configuration of expected invoke_method() calls from subscription manager (provide expected request and response for utransport mock)
+        async fn new_with_client_options<R: MessageFull, S: MessageFull>(
             expected_request: R,
             expected_response: S,
-            times: usize,
         ) -> Self {
+            let config = USubscriptionConfiguration::create(
+                test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+                None,
+                None,
+            )
+            .unwrap();
             let shutdown_notification = Arc::new(Notify::new());
 
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE);
-            let mut client_mock = test_lib::mocks::MockRpcClientMock::default();
 
-            let expected_request_payload =
-                UPayload::try_from_protobuf(expected_request).expect("Test/mock request data bad");
-            let expected_response_payload = UPayload::try_from_protobuf(expected_response)
-                .expect("Test/mock response data bad");
-
-            client_mock
-                .expect_invoke_method()
-                .times(times)
-                .withf(move |remote_method, call_options, request_payload| {
-                    *remote_method == expected_remote_method
-                        && test_lib::is_equivalent_calloptions(call_options, &expected_call_options)
-                        && *request_payload == Some(expected_request_payload.clone())
-                })
-                .returning(move |_u, _o, _p| Ok(Some(expected_response_payload.clone())));
+            let mock_transport = Arc::new(
+                test_lib::mocks::utransport_mock_for_rpc(vec![(
+                    expected_request,
+                    expected_response,
+                )])
+                .await,
+            );
 
             helpers::spawn_and_log_error(async move {
                 handle_message(
-                    test_lib::helpers::local_usubscription_service_uri(),
-                    Arc::new(client_mock),
+                    config,
+                    mock_transport,
                     command_receiver,
                     shutdown_notification,
                 )
@@ -211,6 +208,7 @@ mod tests {
 
     #[test_case(vec![(UUri::default(), UUri::default())]; "Default susbcriber-topic")]
     #[test_case(vec![(UUri::default(), UUri::default()), (UUri::default(), UUri::default())]; "Multiple default susbcriber-topic")]
+    #[test_case(vec![(test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1())]; "One susbcriber-topic")]
     #[test_case(vec![
          (test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1()),
          (test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1())
@@ -240,9 +238,7 @@ mod tests {
             assert!(result.is_ok());
 
             // Verify operation result content
-            // TODO Revisit with next release of up-rust!
-            let _subscription_status = result.unwrap();
-            // assert_eq!(subscription_status.state.unwrap(), State::SUBSCRIBED);
+            assert_eq!(result.unwrap().state.unwrap(), State::SUBSCRIBED);
         }
 
         // Verify iternal bookeeping
@@ -261,7 +257,6 @@ mod tests {
         helpers::init_once();
 
         // Prepare things
-        let remote_method = make_remote_subscribe_uuri(&remote_topic);
         let remote_subscription_request = SubscriptionRequest {
             topic: Some(remote_topic.clone()).into(),
             ..Default::default()
@@ -275,16 +270,11 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let remote_call_options =
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
-        let command_sender =
-            CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
-                remote_method,
-                remote_call_options,
-                remote_subscription_request,
-                remote_subscription_response,
-                1,
-            );
+        let command_sender = CommandSender::new_with_client_options::<
+            SubscriptionRequest,
+            SubscriptionResponse,
+        >(remote_subscription_request, remote_subscription_response)
+        .await;
 
         // Operation to test
         let result = command_sender
@@ -294,7 +284,12 @@ mod tests {
 
         // Verify operation result content
         let subscription_status = result.unwrap();
-        assert_eq!(subscription_status.state.unwrap(), State::SUBSCRIBE_PENDING);
+        // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
+        // this might be SUBSCRIBE_PENDING or SUBSCRIBED
+        assert!(
+            subscription_status.state.unwrap() == State::SUBSCRIBE_PENDING
+                || subscription_status.state.unwrap() == State::SUBSCRIBED
+        );
 
         // Verify iternal bookeeping
         let topic_subscribers = command_sender.get_topic_subscribers().await;
@@ -308,19 +303,20 @@ mod tests {
         #[allow(clippy::mutable_key_type)]
         let remote_topics = remote_topics.unwrap();
         assert_eq!(remote_topics.len(), 1);
-        assert_eq!(
-            *remote_topics.get(&remote_topic.clone()).unwrap(),
-            remote_state
+        // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
+        // this might be SUBSCRIBE_PENDING or SUBSCRIBED
+        assert!(
+            *remote_topics.get(&remote_topic.clone()).unwrap() == State::SUBSCRIBE_PENDING
+                || *remote_topics.get(&remote_topic.clone()).unwrap() == State::SUBSCRIBED
         );
     }
 
     #[tokio::test]
     async fn test_repeated_remote_subscribe() {
         helpers::init_once();
-        let remote_topic = test_lib::helpers::remote_topic1_uri();
 
         // Prepare things
-        let remote_method = make_remote_subscribe_uuri(&remote_topic);
+        let remote_topic = test_lib::helpers::remote_topic1_uri();
         let remote_subscription_request = SubscriptionRequest {
             topic: Some(remote_topic.clone()).into(),
             ..Default::default()
@@ -334,18 +330,11 @@ mod tests {
             .into(),
             ..Default::default()
         };
-        let remote_call_options =
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
-        let command_sender =
-            CommandSender::new_with_client_options::<SubscriptionRequest, SubscriptionResponse>(
-                remote_method,
-                remote_call_options,
-                remote_subscription_request,
-                remote_subscription_response,
-                // We only expect 1 call to remote subscribe, as we're subscribing the same topic twice
-                // (only the first operation should result in a remote subscription call)
-                1,
-            );
+        let command_sender = CommandSender::new_with_client_options::<
+            SubscriptionRequest,
+            SubscriptionResponse,
+        >(remote_subscription_request, remote_subscription_response)
+        .await;
 
         // Operation to test
         let result = command_sender
@@ -476,7 +465,6 @@ mod tests {
         let remote_topic = test_lib::helpers::remote_topic1_uri();
 
         // Prepare things
-        let remote_method = make_remote_unsubscribe_uuri(&remote_topic);
         let remote_unsubscribe_request = UnsubscribeRequest {
             topic: Some(remote_topic.clone()).into(),
             ..Default::default()
@@ -485,15 +473,11 @@ mod tests {
             code: UCode::OK.into(),
             ..Default::default()
         };
-        let remote_call_options =
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4));
         let command_sender = CommandSender::new_with_client_options::<UnsubscribeRequest, UStatus>(
-            remote_method,
-            remote_call_options,
             remote_unsubscribe_request,
             remote_unsubscribe_response,
-            1,
-        );
+        )
+        .await;
 
         // set starting state
         #[allow(clippy::mutable_key_type)]
@@ -547,8 +531,9 @@ mod tests {
         let entry = remote_topics.get(&remote_topic);
         assert!(entry.is_some());
         let state = entry.unwrap();
-        // by now the remote unsubscribe and subsequent state change to UNSUBSCRIBE has come through the command channels
-        assert_eq!(*state, State::UNSUBSCRIBED);
+        // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
+        // this might be UNSUBSCRIBE_PENDING or UNSUBSCRIBED
+        assert!(*state == State::UNSUBSCRIBED || *state == State::UNSUBSCRIBE_PENDING);
     }
 
     // Some subscribers for a remote topic unsubscribe, but at least one subscriber is left
@@ -804,7 +789,7 @@ mod tests {
 
         for subscription in fetch_subscriptions_response.subscriptions {
             assert_eq!(subscription.topic.unwrap(), desired_topic);
-            assert!(expected_subscribers.contains(&subscription.subscriber.uri.as_ref().unwrap()));
+            assert!(expected_subscribers.contains(subscription.subscriber.uri.as_ref().unwrap()));
         }
     }
 }
