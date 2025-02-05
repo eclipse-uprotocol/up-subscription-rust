@@ -14,14 +14,14 @@
 # Config file for cargo deny
 # For all options see https://github.com/EmbarkStudios/cargo-deny/blob/main/deny.template.toml
 
-# If you add a license in the following section also consider changing about.toml
-[licenses]
-allow = ["Apache-2.0", "MIT"]
-#private = { ignore = true }
-exceptions = [{ name = "unicode-ident", allow = ["Unicode-DFS-2016"] }]
-
 [bans]
 multiple-versions = "allow"
+
+# If you add a license in the following section also consider changing about.toml
+[licenses]
+allow = ["Apache-2.0", "EPL-1.0", "EPL-2.0", "MIT"]
+#private = { ignore = true }
+exceptions = [{ name = "unicode-ident", allow = ["Unicode-3.0"] }]
 
 # THIS IS ONLY TEMPORARY, UNTIL up-transport-socket-rust MERGES INITIAL PR AND PROPERLY DECLARES ITS LICENSE
 [licenses.private]
@@ -29,3 +29,7 @@ ignore = true
 ignore-sources = [
     "https://github.com/eclipse-uprotocol/up-transport-socket.git",
 ]
+
+# TEMPORARY until this can be pulled from crates.io releases
+[sources]
+allow-git = ["https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust.git"]

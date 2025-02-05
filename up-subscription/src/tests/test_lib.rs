@@ -171,8 +171,11 @@ pub(crate) mod helpers {
     const SUBSCRIBER3_VERSION: u32 = 0x0000_0001;
     const SUBSCRIBER3_RESOURCE: u32 = 0x0000_1000;
 
+    #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     const NOTIFICATION_TOPIC_ID: u32 = 0x001_0000;
+    #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     const NOTIFICATION_TOPIC_VERSION: u32 = 0x0000_0001;
+    #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     const NOTIFICATION_TOPIC_RESOURCE: u32 = 0x0000_8001;
 
     const TOPIC_LOCAL1_ID: u32 = 0x0010_0000;
@@ -187,6 +190,7 @@ pub(crate) mod helpers {
     const TOPIC_REMOTE1_VERSION: u32 = 0x0000_0001;
     const TOPIC_REMOTE1_RESOURCE: u32 = 0x2000_0000;
 
+    #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     pub(crate) const UENTITY_OWN_URI: &str = "/7777/1/0";
 
     pub(crate) fn subscriber_uri1() -> UUri {
@@ -226,20 +230,6 @@ pub(crate) mod helpers {
         }
     }
 
-    pub(crate) fn subscriber_info2() -> SubscriberInfo {
-        SubscriberInfo {
-            uri: Some(subscriber_uri2()).into(),
-            ..Default::default()
-        }
-    }
-
-    pub(crate) fn subscriber_info3() -> SubscriberInfo {
-        SubscriberInfo {
-            uri: Some(subscriber_uri2()).into(),
-            ..Default::default()
-        }
-    }
-
     pub(crate) fn local_usubscription_service_uri() -> UUri {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
@@ -249,6 +239,7 @@ pub(crate) mod helpers {
         }
     }
 
+    #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     pub(crate) fn notification_topic_uri() -> UUri {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),

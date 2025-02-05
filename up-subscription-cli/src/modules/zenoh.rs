@@ -15,28 +15,28 @@ use std::sync::Arc;
 
 use up_rust::{LocalUriProvider, UTransport};
 
-use up_transport_zenoh::{zenoh_config, UPTransportZenoh};
-
 pub(crate) async fn get_zenoh_handler(
-    uri_provider: Arc<dyn LocalUriProvider>,
+    _uri_provider: Arc<dyn LocalUriProvider>,
 ) -> Option<Arc<dyn UTransport>> {
-    UPTransportZenoh::try_init_log_from_env();
+    // UPTransportZenoh::try_init_log_from_env();
 
-    // Load the config from file path
-    // Config Examples: https://github.com/eclipse-zenoh/zenoh/blob/0.10.1-rc/DEFAULT_CONFIG.json5
-    // zenoh_config::Config::from_file(path).unwrap()
+    // // Load the config from file path
+    // // Config Examples: https://github.com/eclipse-zenoh/zenoh/blob/0.10.1-rc/DEFAULT_CONFIG.json5
+    // // zenoh_config::Config::from_file(path).unwrap()
 
-    // Loat the default config struct
-    let mut zenoh_cfg = zenoh_config::Config::default();
+    // // Loat the default config struct
+    // let mut zenoh_cfg = zenoh_config::Config::default();
 
-    // You can choose from Router, Peer, Client
-    zenoh_cfg.insert_json5("mode", "Peer").unwrap();
+    // // You can choose from Router, Peer, Client
+    // zenoh_cfg.insert_json5("mode", "Peer").unwrap();
 
-    let transport = Arc::new(
-        UPTransportZenoh::new(zenoh_cfg, uri_provider.get_source_uri().to_string())
-            .await
-            .unwrap(),
-    );
+    // let transport = Arc::new(
+    //     UPTransportZenoh::new(zenoh_cfg, uri_provider.get_source_uri().to_string())
+    //         .await
+    //         .unwrap(),
+    // );
 
-    Some(transport)
+    // Some(transport)
+
+    todo!()
 }
