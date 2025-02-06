@@ -23,6 +23,9 @@ use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscript
 #[cfg(unix)]
 use daemonize::Daemonize;
 
+#[cfg(feature = "mqtt5")]
+use up_transport_mqtt5::MqttClientOptions;
+
 mod modules;
 #[cfg(feature = "mqtt5")]
 use modules::get_mqtt5_handler;
@@ -72,7 +75,7 @@ enum Transports {
 }
 
 // All our args
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(version, about = "Rust implementation of Eclipse uProtocol USubscription service.", long_about = None)]
 pub(crate) struct Args {
     /// Authority name for usubscription service
@@ -99,6 +102,10 @@ pub(crate) struct Args {
     /// Increase verbosity of output
     #[arg(short, long, env, default_value_t = false)]
     verbose: bool,
+
+    #[cfg(feature = "mqtt5")]
+    #[command(flatten)]
+    mqtt_client_options: MqttClientOptions,
 }
 
 #[tokio::main]
@@ -127,7 +134,7 @@ async fn main() {
     let transport = match args.transport {
         Transports::None => None::<Arc<dyn UTransport>>,
         #[cfg(feature = "mqtt5")]
-        Transports::Mqtt5 => get_mqtt5_handler(config.clone()).await,
+        Transports::Mqtt5 => get_mqtt5_handler(config.clone(), args.mqtt_client_options).await,
         #[cfg(feature = "socket")]
         Transports::Socket => get_socket_handler(config.clone()).await,
         #[cfg(feature = "zenoh")]

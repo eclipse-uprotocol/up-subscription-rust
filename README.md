@@ -4,24 +4,18 @@ uSubscription service written in Rust
 
 ## Implementation Status
 
-This codebase is heavily work in progress - among the next things to do and investigate:
+This codebase is approaching beta state, mirroring progress in up-spec and up-rust
 
 - [x] extend test coverage, especially for the backend subscription management and notification handler
 - [x] make size of command channels bounded and (probably) configurable
 - [x] handling of startup and proper shutdown for usubscription service
-- [ ] look into recent up-rust changes around Rpc and UTransport implementations, and whether we can  use something from there
+- [x] look into recent up-rust changes around Rpc and UTransport implementations, and whether we can  use something from there
 - [x] add github CI pipeline setup
 - [x] create a usubscription-cli module, a simple command-line frontend for running up-subscription
-- [ ] create a little demo application for interacting with up-subscription
 - [x] set up a devcontainer
-- [ ] feed back learnings and clarifications into up-spec usubscription documentation
-
-## Implementation questions
-
-- Is it expected that a uEntity can register more than one custom topic receiving update notifications?
-- Is it supposed to be possible to register remote uuris as notification topics?
-- Should remote UUris be excluded from all listeners except `subscribe` and `unsubscribe`?
-- Do we need update/change notifications when remote SubscriptionResponses come in?
+- [x] feed back learnings and clarifications into up-spec usubscription documentation
+- [ ] implement any changes necessary to align with update/re-write of uSubscription specification
+- [ ] create a little demo application for interacting with up-subscription
 
 ## Getting Started
 
@@ -31,15 +25,13 @@ This codebase is heavily work in progress - among the next things to do and inve
 
 At the moment, running up-subscription involves the following steps:
 
-1. Instantiate the UTransport and RpcClient implementations you want to use
+1. Instantiate a UTransport implementation you want to use
    - the UTransport is used for sending of subscription change notifications, as well as for returning service responses via the command listeners
-   - the RpcClient is used for interacting with remote usubscription instances, when dealing with subscriptions for remote topics
-2. Call `USubscriptionServce::run()`, providing the UTransport and RpcClient implementations
-   - this requires a `USubscriptionConfiguration` object, which carries the UTransport and RpcClient references, as well as any other available USubscription configuration options
+2. Call `USubscriptionServce::run()`, providing the UTransport implementation
+   - this requires a `USubscriptionConfiguration` object, which carries the UTransport references as well as any other available USubscription configuration options
    - this directly spawns two tasks for managing subscriptions and dealing with the sending of subscription update notifications, respectively
-   - it returns both an immutable (Arc) handle to the USubscription service, as well as a `USubscriptionStopper` object that can be used to shut the USusbcription service down in an orderly manner
-3. Calling `USubscriptionService::now_listen()` USubscription service object from step #2 will set up and connect a complete set of RPC listeners, connecting the USubscription service with the provided UTransport
-4. Vóila, you should have a working usubscription service up and running
+   - it returns a `USubscriptionStopper` object that can be used to shut the USusbcription service down in an orderly manner
+3. Vóila, you should have a working usubscription service up and running
 
 ### Using the up-subscription-cli frontend
 
@@ -55,7 +47,7 @@ Note: After `cargo build`ing the up-subscription-rust projects, the `up-subscrip
 cargo run --features zenoh -- -t zenoh -a usubscription.local -v
 ```
 
-`up-subscription-cli` can be used with any uProtocol rust transport implementation - the available options are controlled as cargo features, refer to the definitions in the `[features]` section of up-subscription-cli `Cargo.toml`. Currently supported are [zenoh](https://github.com/eclipse-uprotocol/up-transport-zenoh-rust) and [socket](https://github.com/eclipse-uprotocol/up-transport-socket) transports, with [mqtt](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust) to follow as soon as they move over to using the up-rust release version from crates.io.
+`up-subscription-cli` can be used with any uProtocol rust transport implementation - the available options are controlled as cargo features, refer to the definitions in the `[features]` section of up-subscription-cli `Cargo.toml`. Currently supported are [zenoh](https://github.com/eclipse-uprotocol/up-transport-zenoh-rust), [socket](https://github.com/eclipse-uprotocol/up-transport-socket) and [mqtt](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust) transports.
 
 ### Running with docker
 
@@ -90,14 +82,16 @@ block-beta
    transport(("UTransport")):3
    space:3
 
-   block:listeners:3
-      SubscribeListener
-      UnsubscribeListener
-      etcListener
+   block:usubscription:3
+      uSubscription/RpcServer
    end
    space:3
-
-   usubscription:3
+   
+   block:handlers:3
+      SubscribeHandler
+      RegisterForNotificationsHandler
+      etcHandler
+   end
    space:3
 
    subscription_manager:1
@@ -108,10 +102,13 @@ block-beta
    task("remote_(un)subscribe")
    space:2
 
-   transport--"rpc call"-->listeners
-   listeners-->usubscription
-   usubscription--"mpsc channel"-->subscription_manager
-   usubscription--"mpsc channel"-->notification_manager
+   transport--"rpc call"-->uSubscription/RpcServer
+   uSubscription/RpcServer-->SubscribeHandler
+   uSubscription/RpcServer-->RegisterForNotificationsHandler
+   uSubscription/RpcServer-->etcHandler
+   SubscribeHandler--"mpsc channel"-->subscription_manager
+   SubscribeHandler--"mpsc channel"-->notification_manager
+   RegisterForNotificationsHandler--"mpsc channel"-->notification_manager
    subscription_manager--"spawn"-->task
 
    classDef smaller font-size:small;
@@ -127,17 +124,17 @@ A basic interaction flow for a client requesting a subscription is illustrated b
 sequenceDiagram
    actor UTransport
    box WhiteSmoke USUbscription Service
-      participant subscribe listener
-      participant usubscription
+      participant usubscription RpcServer
+      participant subscribe handler
       participant subscription_manager
       participant notification_manager
    end
 
-   UTransport-->>+subscribe listener: SubscriptionRequest
-   subscribe listener->>usubscription: subscribe()
+   UTransport-->>+usubscription RpcServer: SubscriptionRequest
+   usubscription RpcServer->>subscribe handler: handle_request()
    
-   activate usubscription
-      usubscription->>subscription_manager: send(SubscriptionEvent::AddSubscription)
+   activate subscribe handler
+      subscribe handler->>subscription_manager: send(SubscriptionEvent::AddSubscription)
    activate subscription_manager
          subscription_manager-->>subscription_manager: validate and store subscription info
 
@@ -167,15 +164,14 @@ sequenceDiagram
          end
    deactivate subscription_manager
 
-      usubscription->>subscribe listener: SubscriptionResponse
-      subscribe listener-->>UTransport: SubscriptionResponse
+      subscribe handler->>usubscription RpcServer: SubscriptionResponse
+      usubscription RpcServer-->>UTransport: SubscriptionResponse
+   deactivate subscribe handler
 
-      usubscription->>+notification_manager: send(NotificationEvent::StateChange)
-      notification_manager-->>UTransport: send(Update) to default notification channel   
-      loop Every custom notification
-         notification_manager-->>UTransport: send(Update) custom channel
-      end
-      notification_manager-->>-usubscription: send(())
-   deactivate usubscription
-
+   usubscription->>+notification_manager: send(NotificationEvent::StateChange)
+   notification_manager-->>UTransport: send(Update) to default notification channel   
+   loop Every custom notification
+      notification_manager-->>UTransport: send(Update) custom channel
+   end
+   notification_manager-->>-usubscription: send(())
 ```

@@ -18,12 +18,8 @@ use up_transport_mqtt5::{Mqtt5Transport, MqttClientOptions, TransportMode};
 
 pub(crate) async fn get_mqtt5_handler(
     uri_provider: Arc<dyn LocalUriProvider>,
+    client_options: MqttClientOptions,
 ) -> Option<Arc<dyn UTransport>> {
-    let client_options = MqttClientOptions {
-        broker_uri: uri_provider.get_source_uri().to_string(),
-        ..Default::default()
-    };
-
     if let Ok(client) = Mqtt5Transport::new(
         TransportMode::InVehicle,
         client_options,

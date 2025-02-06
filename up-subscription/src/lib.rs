@@ -19,7 +19,7 @@ This crate can be used to configure and run a USubscription service as part of y
 ## Library contents
 
 * `usubscription` service as an frontend for the subscription management and notification handler actors.
-* `listeners` module, with UListener trait implementations for all functions defined by the USubscription API
+* `handlers` module, with UListener trait implementations for all functions defined by the USubscription API
 
 ## Note
 
