@@ -11,21 +11,14 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use std::sync::Arc;
+#[cfg(feature = "mqtt5")]
+pub(crate) mod mqtt5;
+pub(crate) use mqtt5::get_mqtt5_transport;
 
-use up_rust::{LocalUriProvider, UTransport};
+#[cfg(feature = "socket")]
+pub(crate) mod socket;
+pub(crate) use socket::get_socket_transport;
 
-pub(crate) async fn get_socket_handler(
-    _uri_provider: Arc<dyn LocalUriProvider>,
-) -> Option<Arc<dyn UTransport>> {
-    // let transport = Arc::new(UTransportSocket::new().expect("Error creating socket transport"));
-
-    // let client = Arc::new(
-    //     InMemoryRpcClient::new(transport.clone(), uri_provider.clone())
-    //         .await
-    //         .expect("Error creating socket client"),
-    // );
-    // Some(transport)
-
-    todo!()
-}
+#[cfg(feature = "zenoh")]
+pub(crate) mod zenoh;
+pub(crate) use zenoh::get_zenoh_transport;

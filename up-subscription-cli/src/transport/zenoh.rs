@@ -13,11 +13,11 @@
 
 use std::sync::Arc;
 
-use up_rust::{LocalUriProvider, UTransport};
+use up_rust::{LocalUriProvider, UStatus, UTransport};
 
-pub(crate) async fn get_zenoh_handler(
+pub(crate) async fn get_zenoh_transport(
     _uri_provider: Arc<dyn LocalUriProvider>,
-) -> Option<Arc<dyn UTransport>> {
+) -> Result<Arc<dyn UTransport>, UStatus> {
     // UPTransportZenoh::try_init_log_from_env();
 
     // // Load the config from file path

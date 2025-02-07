@@ -17,7 +17,7 @@ use log::*;
 use std::sync::Arc;
 use tokio::signal;
 
-use up_rust::{LocalUriProvider, UTransport};
+use up_rust::LocalUriProvider;
 use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscriptionService};
 
 #[cfg(unix)]
@@ -26,13 +26,13 @@ use daemonize::Daemonize;
 #[cfg(feature = "mqtt5")]
 use up_transport_mqtt5::MqttClientOptions;
 
-mod modules;
+mod transport;
 #[cfg(feature = "mqtt5")]
-use modules::get_mqtt5_handler;
+use transport::get_mqtt5_transport;
 #[cfg(feature = "socket")]
-use modules::get_socket_handler;
+use transport::get_socket_transport;
 #[cfg(feature = "zenoh")]
-use modules::get_zenoh_handler;
+use transport::get_zenoh_transport;
 
 fn between_1_and_1024(s: &str) -> Result<usize, String> {
     number_range(s, 1, 1024)
@@ -63,7 +63,7 @@ impl std::fmt::Display for StartupError {
 impl std::error::Error for StartupError {}
 
 #[derive(clap::ValueEnum, Clone, Default, Debug)]
-enum Transports {
+enum Transport {
     #[default]
     None,
     #[cfg(feature = "mqtt5")]
@@ -89,7 +89,7 @@ pub(crate) struct Args {
 
     /// The transport implementation to use
     #[arg(short, long, env)]
-    transport: Transports,
+    transport: Transport,
 
     /// Buffer size of subscription command channel - minimum 1, maximum 1024, defaults to 1024
     #[arg(short, long, env, value_parser=between_1_and_1024)]
@@ -127,23 +127,36 @@ async fn main() {
         Err(e) => {
             panic!("Configuration error: {e}")
         }
-        Ok(config) => config,
+        Ok(config) => Arc::new(config),
     };
 
     // Deal with transport module that we're to use
     let transport = match args.transport {
-        Transports::None => None::<Arc<dyn UTransport>>,
         #[cfg(feature = "mqtt5")]
-        Transports::Mqtt5 => get_mqtt5_handler(config.clone(), args.mqtt_client_options).await,
+        Transport::Mqtt5 => Some(
+            get_mqtt5_transport(config.clone(), args.mqtt_client_options)
+                .await
+                .inspect_err(|e| panic!("Error setting up MQTT5 transport: {}", e.get_message()))
+                .unwrap(),
+        ),
         #[cfg(feature = "socket")]
-        Transports::Socket => get_socket_handler(config.clone()).await,
+        Transport::Socket => Some(
+            get_socket_transport(config.clone())
+                .await
+                .inspect_err(|e| panic!("Error setting up socket transport: {}", e.get_message()))
+                .unwrap(),
+        ),
         #[cfg(feature = "zenoh")]
-        Transports::Zenoh => get_zenoh_handler(config.clone()).await,
+        Transport::Zenoh => Some(
+            get_zenoh_transport(config.clone())
+                .await
+                .inspect_err(|e| panic!("Error setting up Zenoh transport: {}", e.get_message()))
+                .unwrap(),
+        ),
+        Transport::None => {
+            panic!("No valid transport or client implementation available");
+        }
     };
-
-    if transport.is_none() {
-        panic!("No valid transport or client implementation available");
-    }
 
     // Set up and run USubscription service
     let mut ustop = USubscriptionService::run(config.clone(), transport.as_ref().unwrap().clone())
@@ -172,10 +185,11 @@ async fn main() {
     ustop.stop().await;
 }
 
-// TODO: manage transport-module-specific arguments
-fn config_from_args(args: &Args) -> Result<Arc<USubscriptionConfiguration>, ConfigurationError> {
+fn config_from_args(args: &Args) -> Result<USubscriptionConfiguration, ConfigurationError> {
     let authority: &str = args.authority.trim();
-    assert!(!authority.is_empty());
+    if authority.is_empty() {
+        return Err(ConfigurationError::new("Authority name empty or missing"));
+    }
 
     USubscriptionConfiguration::create(
         authority.to_string(),

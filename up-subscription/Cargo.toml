@@ -35,6 +35,7 @@ uriparse = { version = "0.6" }
 [dev-dependencies]
 mockall = { workspace = true }
 test-case = { workspace = true }
+up-rust = { workspace = true, features = ["test-util"] }
 
 [package.metadata.dist]
 all-features = true

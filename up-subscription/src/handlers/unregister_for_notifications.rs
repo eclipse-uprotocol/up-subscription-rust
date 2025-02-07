@@ -47,9 +47,10 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
         // Some input validation
         if resource_id != RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "Wrong resource ID".to_string(),
-            ));
+            return Err(ServiceInvocationError::InvalidArgument(format!(
+                "Wrong resource ID (expected {}, got {})",
+                RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, resource_id
+            )));
         }
         let Some(payload) = request_payload else {
             return Err(ServiceInvocationError::InvalidArgument(

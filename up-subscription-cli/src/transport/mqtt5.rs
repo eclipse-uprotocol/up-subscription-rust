@@ -11,17 +11,23 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-#[cfg(feature = "mqtt5")]
-mod mqtt5;
-#[cfg(feature = "mqtt5")]
-pub(crate) use mqtt5::get_mqtt5_handler;
+use std::sync::Arc;
 
-#[cfg(feature = "socket")]
-mod socket;
-#[cfg(feature = "socket")]
-pub(crate) use socket::get_socket_handler;
+use up_rust::{LocalUriProvider, UStatus, UTransport};
+use up_transport_mqtt5::{Mqtt5Transport, MqttClientOptions, TransportMode};
 
-#[cfg(feature = "zenoh")]
-mod zenoh;
-#[cfg(feature = "zenoh")]
-pub(crate) use zenoh::get_zenoh_handler;
+pub(crate) async fn get_mqtt5_transport(
+    uri_provider: Arc<dyn LocalUriProvider>,
+    client_options: MqttClientOptions,
+) -> Result<Arc<dyn UTransport>, UStatus> {
+    match Mqtt5Transport::new(
+        TransportMode::InVehicle,
+        client_options,
+        uri_provider.get_authority(),
+    )
+    .await
+    {
+        Ok(t) => Ok(Arc::new(t)),
+        Err(e) => Err(e),
+    }
+}

@@ -11,8 +11,6 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use std::sync::Arc;
-
 use uriparse::Authority;
 
 use up_rust::{
@@ -70,14 +68,14 @@ impl USubscriptionConfiguration {
         authority_name: String,
         subscription_command_buffer: Option<usize>,
         notification_command_buffer: Option<usize>,
-    ) -> Result<Arc<USubscriptionConfiguration>, ConfigurationError> {
+    ) -> Result<USubscriptionConfiguration, ConfigurationError> {
         if let Err(e) = Authority::try_from(authority_name.as_bytes()) {
             return Err(ConfigurationError::new(format!(
                 "Invalid authority name: {e}"
             )));
         }
 
-        Ok(Arc::new(USubscriptionConfiguration {
+        Ok(USubscriptionConfiguration {
             authority_name,
             subscription_command_buffer: subscription_command_buffer
                 .unwrap_or(DEFAULT_COMMAND_BUFFER_SIZE)
@@ -85,7 +83,7 @@ impl USubscriptionConfiguration {
             notification_command_buffer: notification_command_buffer
                 .unwrap_or(DEFAULT_COMMAND_BUFFER_SIZE)
                 .clamp(1, DEFAULT_COMMAND_BUFFER_SIZE),
-        }))
+        })
     }
 }
 

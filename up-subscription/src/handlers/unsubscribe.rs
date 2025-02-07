@@ -53,9 +53,10 @@ impl RequestHandler for UnubscribeRequestHandler {
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
         // Some input validation
         if resource_id != RESOURCE_ID_UNSUBSCRIBE {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "Wrong resource ID".to_string(),
-            ));
+            return Err(ServiceInvocationError::InvalidArgument(format!(
+                "Wrong resource ID (expected {}, got {})",
+                RESOURCE_ID_UNSUBSCRIBE, resource_id
+            )));
         }
         let Some(payload) = request_payload else {
             return Err(ServiceInvocationError::InvalidArgument(

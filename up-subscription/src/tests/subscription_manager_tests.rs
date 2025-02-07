@@ -39,12 +39,14 @@ mod tests {
 
     impl CommandSender {
         fn new() -> Self {
-            let config = USubscriptionConfiguration::create(
-                test_lib::helpers::LOCAL_AUTHORITY.to_string(),
-                None,
-                None,
-            )
-            .unwrap();
+            let config = Arc::new(
+                USubscriptionConfiguration::create(
+                    test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
             let transport_mock = MockTransport::default();
             let shutdown_notification = Arc::new(Notify::new());
             let (command_sender, command_receiver) =
@@ -69,12 +71,14 @@ mod tests {
             expected_request: R,
             expected_response: S,
         ) -> Self {
-            let config = USubscriptionConfiguration::create(
-                test_lib::helpers::LOCAL_AUTHORITY.to_string(),
-                None,
-                None,
-            )
-            .unwrap();
+            let config = Arc::new(
+                USubscriptionConfiguration::create(
+                    test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+                    None,
+                    None,
+                )
+                .unwrap(),
+            );
             let shutdown_notification = Arc::new(Notify::new());
 
             let (command_sender, command_receiver) =
