@@ -15,12 +15,13 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
-use crate::subscription_manager::SubscriptionEvent;
+use crate::subscription_manager::{SubscribersResponse, SubscriptionEvent};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
     core::usubscription::{
-        FetchSubscribersRequest, FetchSubscribersResponse, RESOURCE_ID_FETCH_SUBSCRIBERS,
+        FetchSubscribersRequest, FetchSubscribersResponse, SubscriberInfo,
+        RESOURCE_ID_FETCH_SUBSCRIBERS,
     },
     UAttributes,
 };
@@ -64,11 +65,17 @@ impl RequestHandler for FetchSubscribersRequestHandler {
                         .to_string(),
                 )
             })?;
-
+        let FetchSubscribersRequest { topic, offset, .. } = fetch_subscribers_request;
+        let Some(topic) = topic.into_option() else {
+            return Err(ServiceInvocationError::InvalidArgument(
+                "No topic defined in request".to_string(),
+            ));
+        };
         // Interact with subscription manager backend
-        let (respond_to, receive_from) = oneshot::channel::<FetchSubscribersResponse>();
+        let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
         let se = SubscriptionEvent::FetchSubscribers {
-            request: fetch_subscribers_request,
+            topic,
+            offset,
             respond_to,
         };
 
@@ -84,12 +91,26 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         };
 
         // Build and return result
+        let (subscribers, has_more) = fetch_subscribers_response;
+        let mut subscriber_infos: Vec<SubscriberInfo> = vec![];
+        for subscriber in subscribers {
+            subscriber_infos.push(SubscriberInfo {
+                uri: Some(subscriber).into(),
+                ..Default::default()
+            });
+        }
+        let fetch_subscribers_response = FetchSubscribersResponse {
+            subscribers: subscriber_infos,
+            has_more_records: Some(has_more),
+            ..Default::default()
+        };
+
         let response_payload =
             UPayload::try_from_protobuf(fetch_subscribers_response).map_err(|e| {
                 ServiceInvocationError::Internal(format!("Error building response payload: {e}"))
             })?;
 
-        Ok(Some(response_payload))
+        return Ok(Some(response_payload));
     }
 }
 
@@ -140,16 +161,14 @@ mod tests {
         let subscription_event = subscription_receiver.recv().await.unwrap();
         match subscription_event {
             SubscriptionEvent::FetchSubscribers {
-                request,
+                topic,
+                offset,
                 respond_to,
             } => {
-                assert_eq!(
-                    request.topic.unwrap_or_default(),
-                    test_lib::helpers::local_topic1_uri()
-                );
-                assert_eq!(request.offset.unwrap_or_default(), 42);
+                assert_eq!(topic, test_lib::helpers::local_topic1_uri());
+                assert_eq!(offset, Some(42));
 
-                let _ = respond_to.send(FetchSubscribersResponse::default());
+                let _ = respond_to.send(SubscribersResponse::default());
             }
             _ => panic!("Wrong event type"),
         }

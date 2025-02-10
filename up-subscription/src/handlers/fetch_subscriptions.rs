@@ -15,12 +15,15 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
-use crate::subscription_manager::SubscriptionEvent;
+use crate::subscription_manager::{
+    RequestKind, SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
+};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
     core::usubscription::{
-        FetchSubscriptionsRequest, FetchSubscriptionsResponse, RESOURCE_ID_FETCH_SUBSCRIPTIONS,
+        FetchSubscriptionsRequest, FetchSubscriptionsResponse, Request, SubscriberInfo,
+        Subscription, RESOURCE_ID_FETCH_SUBSCRIPTIONS,
     },
     UAttributes,
 };
@@ -64,11 +67,40 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
                         .to_string(),
                 )
             })?;
+        let FetchSubscriptionsRequest {
+            request, offset, ..
+        } = fetch_subscriptions_request;
+        let request_kind = match request {
+            Some(Request::Topic(topic)) => {
+                if !topic.is_empty() {
+                    RequestKind::Topic(topic)
+                } else {
+                    return Err(ServiceInvocationError::InvalidArgument(
+                        "Empty topic in Request::Topic".to_string(),
+                    ));
+                }
+            }
+            Some(Request::Subscriber(subscriber)) => {
+                if subscriber.uri.is_some() {
+                    RequestKind::Subscriber(subscriber.uri.unwrap_or_default())
+                } else {
+                    return Err(ServiceInvocationError::InvalidArgument(
+                        "Empty subscriber uri in Request::Subscriber".to_string(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(ServiceInvocationError::InvalidArgument(
+                    "Missing or bad Request parameter".to_string(),
+                ));
+            }
+        };
 
         // Interact with subscription manager backend
-        let (respond_to, receive_from) = oneshot::channel::<FetchSubscriptionsResponse>();
+        let (respond_to, receive_from) = oneshot::channel::<SubscriptionsResponse>();
         let se = SubscriptionEvent::FetchSubscriptions {
-            request: fetch_subscriptions_request,
+            request: request_kind,
+            offset,
             respond_to,
         };
 
@@ -84,6 +116,32 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         };
 
         // Build and return result
+        let (subscriptions, has_more) = fetch_subscriptions_response;
+        let mut subscription_list: Vec<Subscription> = vec![];
+
+        for SubscriptionEntry {
+            topic: topic_entry,
+            subscriber: subscriber_entry,
+            status: status_entry,
+        } in subscriptions
+        {
+            subscription_list.push(Subscription {
+                topic: Some(topic_entry).into(),
+                subscriber: Some(SubscriberInfo {
+                    uri: Some(subscriber_entry).into(),
+                    ..Default::default()
+                })
+                .into(),
+                status: Some(status_entry).into(),
+                ..Default::default()
+            });
+        }
+        let fetch_subscriptions_response = FetchSubscriptionsResponse {
+            subscriptions: subscription_list,
+            has_more_records: Some(has_more),
+            ..Default::default()
+        };
+
         let response_payload =
             UPayload::try_from_protobuf(fetch_subscriptions_response).map_err(|e| {
                 ServiceInvocationError::Internal(format!("Error building response payload: {e}"))
@@ -143,18 +201,25 @@ mod tests {
         match subscription_event {
             SubscriptionEvent::FetchSubscriptions {
                 request,
+                offset,
                 respond_to,
             } => {
-                match request.request.as_ref().unwrap() {
-                    up_rust::core::usubscription::Request::Subscriber(subscriber_info) => {
-                        assert_eq!(subscriber_info, &test_lib::helpers::subscriber_info1());
+                match request {
+                    RequestKind::Subscriber(subscriber_info) => {
+                        assert_eq!(
+                            subscriber_info,
+                            test_lib::helpers::subscriber_info1()
+                                .uri
+                                .unwrap_or_default()
+                        );
                     }
                     _ => panic!("Wrong request details"),
                 }
-                assert_eq!(request.offset.unwrap_or_default(), 42);
+                assert_eq!(offset.unwrap_or_default(), 42);
 
-                let _ = respond_to.send(FetchSubscriptionsResponse::default());
+                let _ = respond_to.send(SubscriptionsResponse::default());
             }
+
             _ => panic!("Wrong event type"),
         }
     }

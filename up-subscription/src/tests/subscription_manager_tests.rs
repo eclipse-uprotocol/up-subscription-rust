@@ -22,14 +22,15 @@ mod tests {
     use up_rust::MockTransport;
 
     use up_rust::core::usubscription::{
-        FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
-        FetchSubscriptionsResponse, Request, State, SubscriberInfo, SubscriptionRequest,
-        SubscriptionResponse, SubscriptionStatus, UnsubscribeRequest,
+        State, SubscriptionRequest, SubscriptionResponse, SubscriptionStatus, UnsubscribeRequest,
     };
     use up_rust::{UCode, UStatus, UUri};
 
     use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;
-    use crate::subscription_manager::{handle_message, SubscriptionEvent};
+    use crate::subscription_manager::{
+        handle_message, RequestKind, SubscribersResponse, SubscriptionEntry, SubscriptionEvent,
+        SubscriptionsResponse,
+    };
     use crate::{helpers, test_lib, USubscriptionConfiguration};
 
     // Simple subscription-manager-actor front-end to use for testing
@@ -137,11 +138,13 @@ mod tests {
 
         async fn fetch_subscribers(
             &self,
-            request: FetchSubscribersRequest,
-        ) -> Result<FetchSubscribersResponse, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<FetchSubscribersResponse>();
+            topic: UUri,
+            offset: Option<u32>,
+        ) -> Result<SubscribersResponse, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
             let command = SubscriptionEvent::FetchSubscribers {
-                request,
+                topic,
+                offset,
                 respond_to,
             };
             self.command_sender.send(command).await?;
@@ -150,11 +153,13 @@ mod tests {
 
         async fn fetch_subscriptions(
             &self,
-            request: FetchSubscriptionsRequest,
-        ) -> Result<FetchSubscriptionsResponse, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<FetchSubscriptionsResponse>();
+            request: RequestKind,
+            offset: Option<u32>,
+        ) -> Result<SubscriptionsResponse, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<SubscriptionsResponse>();
             let command = SubscriptionEvent::FetchSubscriptions {
                 request,
+                offset,
                 respond_to,
             };
             self.command_sender.send(command).await?;
@@ -639,27 +644,24 @@ mod tests {
 
         // Prepare things
         let desired_topic = test_lib::helpers::local_topic1_uri();
-        let request = FetchSubscribersRequest {
-            topic: Some(desired_topic.clone()).into(),
-            offset,
-            ..Default::default()
-        };
 
         // Operation to test
-        let result = command_sender.fetch_subscribers(request).await;
+        let result = command_sender
+            .fetch_subscribers(desired_topic.clone(), offset)
+            .await;
         assert!(result.is_ok());
 
         // Verify operation result
-        let fetch_subscribers_response = result.unwrap();
+        let (fetch_subscribers_response, _has_more) = result.unwrap();
         assert_eq!(
-            fetch_subscribers_response.subscribers.len(),
+            fetch_subscribers_response.len(),
             2 - (offset.unwrap_or(0) as usize)
         );
 
-        for subscriber in fetch_subscribers_response.subscribers {
+        for subscriber in fetch_subscribers_response {
             #[allow(clippy::mutable_key_type)]
             let expected_subscribers = desired_state.get(&desired_topic).unwrap();
-            assert!(expected_subscribers.contains(&subscriber.uri));
+            assert!(expected_subscribers.contains(&subscriber));
         }
     }
 
@@ -692,47 +694,40 @@ mod tests {
         command_sender
             .set_topic_subscribers(desired_state.clone())
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("Error during testing/setup of subscription manager");
 
         // Prepare things
-        let desired_subscriber = test_lib::helpers::subscriber_info1();
-        let request = FetchSubscriptionsRequest {
-            request: Some(Request::Subscriber(desired_subscriber.clone())),
-            offset,
-            ..Default::default()
-        };
+        let desired_subscriber = test_lib::helpers::subscriber_uri1();
 
-        // Operation to test
-        let result = command_sender.fetch_subscriptions(request).await;
-        assert!(result.is_ok());
-
-        // Verify operation result
-        let fetch_subscriptions_response = result.unwrap();
-
-        #[allow(clippy::mutable_key_type)]
-        let mut expected_subscribers: Vec<(SubscriberInfo, UUri)> = Vec::new();
-        for (topic, subscribers) in desired_state {
-            if subscribers.contains(&desired_subscriber.uri) {
+        let mut expected_subscribers: Vec<(UUri, UUri)> = Vec::new();
+        for (topic, subscribers) in desired_state.clone() {
+            if subscribers.contains(&desired_subscriber) {
                 expected_subscribers.push((
-                    SubscriberInfo {
-                        uri: Some(subscribers.get(&desired_subscriber.uri).unwrap().clone()).into(),
-                        ..Default::default()
-                    },
+                    subscribers
+                        .get(&desired_subscriber)
+                        .unwrap_or_default()
+                        .clone(),
                     topic,
                 ));
             }
         }
 
+        // Operation to test
+        let result = command_sender
+            .fetch_subscriptions(RequestKind::Subscriber(desired_subscriber.clone()), offset)
+            .await;
+        assert!(result.is_ok());
+
+        // Verify operation result
+        let (fetch_subscriptions_response, _has_more) = result.unwrap();
+
         assert_eq!(
-            fetch_subscriptions_response.subscriptions.len(),
+            fetch_subscriptions_response.len(),
             expected_subscribers.len() - (offset.unwrap_or(0) as usize),
         );
 
-        for subscription in fetch_subscriptions_response.subscriptions {
-            let pair = (
-                subscription.subscriber.unwrap(),
-                subscription.topic.unwrap(),
-            );
+        for subscription in fetch_subscriptions_response {
+            let pair = (subscription.subscriber, subscription.topic);
             assert!(expected_subscribers.contains(&pair));
         }
     }
@@ -770,30 +765,32 @@ mod tests {
 
         // Prepare things
         let desired_topic = test_lib::helpers::local_topic1_uri();
-        let request = FetchSubscriptionsRequest {
-            request: Some(Request::Topic(desired_topic.clone())),
-            offset,
-            ..Default::default()
-        };
-
-        // Operation to test
-        let result = command_sender.fetch_subscriptions(request).await;
-        assert!(result.is_ok());
-
-        // Verify operation result
-        let fetch_subscriptions_response = result.unwrap();
 
         #[allow(clippy::mutable_key_type)]
         let expected_subscribers = desired_state.get(&desired_topic).unwrap();
 
+        // Operation to test
+        let result = command_sender
+            .fetch_subscriptions(RequestKind::Topic(desired_topic.clone()), offset)
+            .await;
+        assert!(result.is_ok());
+
+        // Verify operation result
+        let (fetch_subscriptions_response, _has_more) = result.unwrap();
+
         assert_eq!(
-            fetch_subscriptions_response.subscriptions.len(),
+            fetch_subscriptions_response.len(),
             expected_subscribers.len() - (offset.unwrap_or(0) as usize)
         );
 
-        for subscription in fetch_subscriptions_response.subscriptions {
-            assert_eq!(subscription.topic.unwrap(), desired_topic);
-            assert!(expected_subscribers.contains(subscription.subscriber.uri.as_ref().unwrap()));
+        for SubscriptionEntry {
+            topic,
+            subscriber,
+            status: _,
+        } in fetch_subscriptions_response
+        {
+            assert_eq!(topic, desired_topic);
+            assert!(expected_subscribers.contains(&subscriber));
         }
     }
 }

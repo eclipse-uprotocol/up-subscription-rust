@@ -21,10 +21,8 @@ use up_rust::{LocalUriProvider, UTransport};
 use up_rust::{
     communication::CallOptions,
     core::usubscription::{
-        FetchSubscribersRequest, FetchSubscribersResponse, FetchSubscriptionsRequest,
-        FetchSubscriptionsResponse, Request, State as TopicState, SubscriberInfo, Subscription,
-        SubscriptionRequest, SubscriptionResponse, SubscriptionStatus, UnsubscribeRequest,
-        RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
+        State as TopicState, SubscriptionRequest, SubscriptionResponse, SubscriptionStatus,
+        UnsubscribeRequest, RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
         USUBSCRIPTION_VERSION_MAJOR,
     },
     UCode, UPriority, UStatus, UUri,
@@ -45,6 +43,22 @@ const UP_MAX_FETCH_SUBSCRIBERS_LEN: usize = 100;
 // Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation
 const UP_MAX_FETCH_SUBSCRIPTIONS_LEN: usize = 100;
 
+#[derive(Debug)]
+pub(crate) enum RequestKind {
+    Subscriber(UUri),
+    Topic(UUri),
+}
+
+#[derive(Debug)]
+pub(crate) struct SubscriptionEntry {
+    pub(crate) topic: UUri,
+    pub(crate) subscriber: UUri,
+    pub(crate) status: SubscriptionStatus,
+}
+
+pub(crate) type SubscribersResponse = (Vec<UUri>, bool); // List of subscribers, boolean flag stating if there exist more entries than contained in list
+pub(crate) type SubscriptionsResponse = (Vec<SubscriptionEntry>, bool); // List of subscriber entries, boolean flag stating if there exist more entries than contained in list
+
 // This is the 'outside API' of subscription manager, it includes some events that are only to be used in (and only enabled for) testing.
 #[derive(Debug)]
 pub(crate) enum SubscriptionEvent {
@@ -59,12 +73,14 @@ pub(crate) enum SubscriptionEvent {
         respond_to: oneshot::Sender<SubscriptionStatus>,
     },
     FetchSubscribers {
-        request: FetchSubscribersRequest,
-        respond_to: oneshot::Sender<FetchSubscribersResponse>,
+        topic: UUri,
+        offset: Option<u32>,
+        respond_to: oneshot::Sender<SubscribersResponse>, // return list of subscribers and flag indicating whether there are more
     },
     FetchSubscriptions {
-        request: FetchSubscriptionsRequest,
-        respond_to: oneshot::Sender<FetchSubscriptionsResponse>,
+        request: RequestKind,
+        offset: Option<u32>,
+        respond_to: oneshot::Sender<SubscriptionsResponse>, // return list of Subscriptions and flag indicating whether there are more
     },
     // Purely for use during testing: get copy of current topic-subscriper ledger
     #[cfg(test)]
@@ -247,13 +263,14 @@ pub(crate) async fn handle_message(
                     }
                 }
                 SubscriptionEvent::FetchSubscribers {
-                    request,
+                    topic,
+                    offset,
                     respond_to,
                 } => {
-                    let FetchSubscribersRequest { topic, offset, .. } = request;
-
                     // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
                     // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
+                    let mut subscriber_response: SubscribersResponse = (vec![], false);
+
                     if let Some(subs) = topic_subscribers.get(&topic) {
                         let mut subscribers: Vec<&UUri> = subs.iter().collect();
 
@@ -268,143 +285,106 @@ pub(crate) async fn handle_message(
                             has_more = true;
                         }
 
-                        let mut subscriber_infos: Vec<SubscriberInfo> = Vec::new();
+                        let mut subscriber_infos = vec![];
                         for subscriber_uri in subscribers {
-                            subscriber_infos.push(SubscriberInfo {
-                                uri: Some(subscriber_uri.clone()).into(),
-                                ..Default::default()
-                            });
+                            subscriber_infos.push(subscriber_uri.clone());
                         }
 
-                        if respond_to
-                            .send(FetchSubscribersResponse {
-                                subscribers: subscriber_infos,
-                                has_more_records: has_more.into(),
-                                ..Default::default()
-                            })
-                            .is_err()
-                        {
-                            error!("Problem with internal communication");
-                        }
-                    } else if respond_to
-                        .send(FetchSubscribersResponse::default())
-                        .is_err()
-                    {
+                        subscriber_response = (subscriber_infos, has_more);
+                    }
+                    if respond_to.send(subscriber_response).is_err() {
                         error!("Problem with internal communication");
                     }
                 }
                 SubscriptionEvent::FetchSubscriptions {
                     request,
+                    offset,
                     respond_to,
                 } => {
-                    let FetchSubscriptionsRequest {
-                        request, offset, ..
-                    } = request;
-                    let mut fetch_subscriptions_response = FetchSubscriptionsResponse::default();
+                    let mut fetch_subscriptions_response: SubscriptionsResponse = (vec![], false);
+                    match request {
+                        RequestKind::Subscriber(subscriber) => {
+                            // This is where someone wants "all subscriptions of a specific subscriber",
+                            // which isn't very straighforward with the way we do bookeeping, so
+                            // first, get all entries from our topic-subscribers ledger that contain the requested SubscriberInfo
+                            let subscriptions: Vec<(&UUri, &HashSet<UUri>)> = topic_subscribers
+                                .iter()
+                                .filter(|entry| entry.1.contains(&subscriber))
+                                .collect();
 
-                    if let Some(request) = request {
-                        match request {
-                            Request::Subscriber(subscriber) => {
-                                // This is where someone wants "all subscriptions of a specific subscriber",
-                                // which isn't very straighforward with the way we do bookeeping, so
-                                // first, get all entries from our topic-subscribers ledger that contain the requested SubscriberInfo
-                                let subscriptions: Vec<(&UUri, &HashSet<UUri>)> = topic_subscribers
-                                    .iter()
-                                    .filter(|entry| entry.1.contains(&subscriber.uri))
-                                    .collect();
+                            // from that set, we use the topics and build Subscription response objects
+                            let mut result_subs: Vec<SubscriptionEntry> = Vec::new();
+                            for (topic, _) in subscriptions {
+                                // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
+                                // if nothing is available there we fall back to default assumption that any
+                                // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
+                                let state =
+                                    remote_topics.get(topic).unwrap_or(&TopicState::SUBSCRIBED);
 
-                                // from that set, we use the topics and build Subscription response objects
-                                let mut result_subs: Vec<Subscription> = Vec::new();
-                                for (topic, _) in subscriptions {
-                                    // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
-                                    // if nothing is available there we fall back to default assumption that any
-                                    // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
-                                    let state =
-                                        remote_topics.get(topic).unwrap_or(&TopicState::SUBSCRIBED);
-
-                                    let subscription = Subscription {
-                                        topic: Some(topic.clone()).into(),
-                                        subscriber: Some(subscriber.clone()).into(),
-                                        status: Some(SubscriptionStatus {
-                                            state: (*state).into(),
-                                            ..Default::default()
-                                        })
-                                        .into(),
+                                let subscription = SubscriptionEntry {
+                                    topic: topic.clone(),
+                                    subscriber: subscriber.clone(),
+                                    status: SubscriptionStatus {
+                                        state: (*state).into(),
                                         ..Default::default()
-                                    };
-                                    result_subs.push(subscription);
-                                }
+                                    },
+                                };
+                                result_subs.push(subscription);
+                            }
+
+                            if let Some(offset) = offset {
+                                result_subs.drain(..offset as usize);
+                            }
+
+                            // split up result list, to make sense of has_more_records field
+                            let mut has_more = false;
+                            if result_subs.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
+                                result_subs.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
+                                has_more = true;
+                            }
+
+                            fetch_subscriptions_response = (result_subs, has_more);
+                        }
+                        RequestKind::Topic(topic) => {
+                            if let Some(subs) = topic_subscribers.get(&topic) {
+                                let mut subscribers: Vec<&UUri> = subs.iter().collect();
 
                                 if let Some(offset) = offset {
-                                    result_subs.drain(..offset as usize);
+                                    subscribers.drain(..offset as usize);
                                 }
 
                                 // split up result list, to make sense of has_more_records field
                                 let mut has_more = false;
-                                if result_subs.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
-                                    result_subs.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
+                                if subscribers.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
+                                    subscribers.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
                                     has_more = true;
                                 }
 
-                                fetch_subscriptions_response = FetchSubscriptionsResponse {
-                                    subscriptions: result_subs,
-                                    has_more_records: Some(has_more),
-                                    ..Default::default()
-                                };
-                            }
-                            Request::Topic(topic) => {
-                                if let Some(subs) = topic_subscribers.get(&topic) {
-                                    let mut subscribers: Vec<&UUri> = subs.iter().collect();
+                                let mut result_subs: Vec<SubscriptionEntry> = Vec::new();
+                                for subscriber in subscribers {
+                                    // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
+                                    // if nothing is available there we fall back to default assumption that any
+                                    // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
+                                    let state = remote_topics
+                                        .get(&topic)
+                                        .unwrap_or(&TopicState::SUBSCRIBED);
 
-                                    if let Some(offset) = offset {
-                                        subscribers.drain(..offset as usize);
-                                    }
-
-                                    // split up result list, to make sense of has_more_records field
-                                    let mut has_more = false;
-                                    if subscribers.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
-                                        subscribers.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
-                                        has_more = true;
-                                    }
-
-                                    let mut result_subs: Vec<Subscription> = Vec::new();
-                                    for subscriber in subscribers {
-                                        // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
-                                        // if nothing is available there we fall back to default assumption that any
-                                        // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
-                                        let state = remote_topics
-                                            .get(&topic)
-                                            .unwrap_or(&TopicState::SUBSCRIBED);
-
-                                        let subscription = Subscription {
-                                            topic: Some(topic.clone()).into(),
-                                            subscriber: Some(SubscriberInfo {
-                                                uri: Some(subscriber.clone()).into(),
-                                                ..Default::default()
-                                            })
-                                            .into(),
-                                            status: Some(SubscriptionStatus {
-                                                state: (*state).into(),
-                                                ..Default::default()
-                                            })
-                                            .into(),
+                                    let subscription = SubscriptionEntry {
+                                        topic: topic.clone(),
+                                        subscriber: subscriber.clone(),
+                                        status: SubscriptionStatus {
+                                            state: (*state).into(),
                                             ..Default::default()
-                                        };
-                                        result_subs.push(subscription);
-                                    }
-
-                                    fetch_subscriptions_response = FetchSubscriptionsResponse {
-                                        subscriptions: result_subs,
-                                        has_more_records: Some(has_more),
-                                        ..Default::default()
+                                        },
                                     };
+                                    result_subs.push(subscription);
                                 }
-                            }
-                            _ => {
-                                error!("Invalid Request object - this really should not happen")
+
+                                fetch_subscriptions_response = (result_subs, has_more);
                             }
                         }
                     }
+
                     if respond_to.send(fetch_subscriptions_response).is_err() {
                         error!("Problem with internal communication");
                     };
