@@ -16,7 +16,10 @@ use log::*;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
-use crate::{notification_manager::NotificationEvent, subscription_manager::SubscriptionEvent};
+use crate::{
+    helpers,
+    {notification_manager::NotificationEvent, subscription_manager::SubscriptionEvent},
+};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
@@ -51,30 +54,12 @@ impl RequestHandler for SubscriptionRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // Some input validation
-        if resource_id != RESOURCE_ID_SUBSCRIBE {
-            return Err(ServiceInvocationError::InvalidArgument(format!(
-                "Wrong resource ID (expected {}, got {})",
-                RESOURCE_ID_SUBSCRIBE, resource_id
-            )));
-        }
-        let Some(payload) = request_payload else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request payload".to_string(),
-            ));
-        };
-        let subscription_request: SubscriptionRequest =
-            payload.extract_protobuf().map_err(|e| {
-                ServiceInvocationError::InvalidArgument(
-                    format!("Expected SubscriptionRequest payload, error when unpacking {e}")
-                        .to_string(),
-                )
-            })?;
-        let Some(source) = message_attributes.source.as_ref() else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request source uri".to_string(),
-            ));
-        };
+        let (subscription_request, source) = helpers::extract_inputs::<SubscriptionRequest>(
+            RESOURCE_ID_SUBSCRIBE,
+            resource_id,
+            &request_payload,
+            message_attributes,
+        )?;
 
         // Interact with subscription manager backend
         let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();

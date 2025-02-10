@@ -15,7 +15,10 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
-use crate::subscription_manager::{SubscribersResponse, SubscriptionEvent};
+use crate::{
+    helpers,
+    subscription_manager::{SubscribersResponse, SubscriptionEvent},
+};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
@@ -43,28 +46,17 @@ impl RequestHandler for FetchSubscribersRequestHandler {
     async fn handle_request(
         &self,
         resource_id: u16,
-        _message_attributes: &UAttributes,
+        message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // Some input validation
-        if resource_id != RESOURCE_ID_FETCH_SUBSCRIBERS {
-            return Err(ServiceInvocationError::InvalidArgument(format!(
-                "Wrong resource ID (expected {}, got {})",
-                RESOURCE_ID_FETCH_SUBSCRIBERS, resource_id
-            )));
-        }
-        let Some(payload) = request_payload else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request payload".to_string(),
-            ));
-        };
-        let fetch_subscribers_request: FetchSubscribersRequest =
-            payload.extract_protobuf().map_err(|e| {
-                ServiceInvocationError::InvalidArgument(
-                    format!("Expected FetchSubscribersRequest payload, error when unpacking {e}")
-                        .to_string(),
-                )
-            })?;
+        let (fetch_subscribers_request, _source) =
+            helpers::extract_inputs::<FetchSubscribersRequest>(
+                RESOURCE_ID_FETCH_SUBSCRIBERS,
+                resource_id,
+                &request_payload,
+                message_attributes,
+            )?;
+
         let FetchSubscribersRequest { topic, offset, .. } = fetch_subscribers_request;
         let Some(topic) = topic.into_option() else {
             return Err(ServiceInvocationError::InvalidArgument(

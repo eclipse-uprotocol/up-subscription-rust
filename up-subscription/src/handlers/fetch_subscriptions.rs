@@ -15,8 +15,11 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
-use crate::subscription_manager::{
-    RequestKind, SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
+use crate::{
+    helpers,
+    subscription_manager::{
+        RequestKind, SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
+    },
 };
 
 use up_rust::{
@@ -45,28 +48,17 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
     async fn handle_request(
         &self,
         resource_id: u16,
-        _message_attributes: &UAttributes,
+        message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // Some input validation
-        if resource_id != RESOURCE_ID_FETCH_SUBSCRIPTIONS {
-            return Err(ServiceInvocationError::InvalidArgument(format!(
-                "Wrong resource ID (expected {}, got {})",
-                RESOURCE_ID_FETCH_SUBSCRIPTIONS, resource_id
-            )));
-        }
-        let Some(payload) = request_payload else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request payload".to_string(),
-            ));
-        };
-        let fetch_subscriptions_request: FetchSubscriptionsRequest =
-            payload.extract_protobuf().map_err(|e| {
-                ServiceInvocationError::InvalidArgument(
-                    format!("Expected FetchSubscriptionsRequest payload, error when unpacking {e}")
-                        .to_string(),
-                )
-            })?;
+        let (fetch_subscriptions_request, _source) =
+            helpers::extract_inputs::<FetchSubscriptionsRequest>(
+                RESOURCE_ID_FETCH_SUBSCRIPTIONS,
+                resource_id,
+                &request_payload,
+                message_attributes,
+            )?;
+
         let FetchSubscriptionsRequest {
             request, offset, ..
         } = fetch_subscriptions_request;

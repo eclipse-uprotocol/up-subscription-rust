@@ -15,7 +15,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
-use crate::notification_manager::NotificationEvent;
+use crate::{helpers, notification_manager::NotificationEvent};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
@@ -45,30 +45,12 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // Some input validation
-        if resource_id != RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS {
-            return Err(ServiceInvocationError::InvalidArgument(format!(
-                "Wrong resource ID (expected {}, got {})",
-                RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, resource_id
-            )));
-        }
-        let Some(payload) = request_payload else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request payload".to_string(),
-            ));
-        };
-        let _subscription_request: NotificationsRequest =
-            payload.extract_protobuf().map_err(|e| {
-                ServiceInvocationError::InvalidArgument(
-                    format!("Expected NotificationsRequest payload, error when unpacking {e}")
-                        .to_string(),
-                )
-            })?;
-        let Some(source) = message_attributes.source.as_ref() else {
-            return Err(ServiceInvocationError::InvalidArgument(
-                "No request source uri".to_string(),
-            ));
-        };
+        let (_subscription_request, source) = helpers::extract_inputs::<NotificationsRequest>(
+            RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
+            resource_id,
+            &request_payload,
+            message_attributes,
+        )?;
 
         // Interact with notification manager backend
         let se = NotificationEvent::RemoveNotifyee {
