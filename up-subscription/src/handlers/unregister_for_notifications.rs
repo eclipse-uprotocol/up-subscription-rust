@@ -12,6 +12,7 @@
  ********************************************************************************/
 
 use async_trait::async_trait;
+use log::*;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -58,9 +59,10 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
         };
 
         if let Err(e) = self.notification_sender.send(se).await {
-            return Err(ServiceInvocationError::Internal(format!(
-                "Error communicating with notification manager: {e}"
-            )));
+            error!("Error communicating with subscription manager: {e}");
+            return Err(ServiceInvocationError::Internal(
+                "Error communicating with notification manager".to_string(),
+            ));
         }
 
         // Build and return result

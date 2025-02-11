@@ -12,6 +12,7 @@
  ********************************************************************************/
 
 use async_trait::async_trait;
+use log::*;
 use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
@@ -45,23 +46,30 @@ impl RequestHandler for RegisterNotificationsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        let (subscription_request, source) = helpers::extract_inputs::<NotificationsRequest>(
-            RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
-            resource_id,
-            &request_payload,
-            message_attributes,
-        )?;
+        let (register_for_notifications_request, source) =
+            helpers::extract_inputs::<NotificationsRequest>(
+                RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
+                resource_id,
+                &request_payload,
+                message_attributes,
+            )?;
+        let Some(topic) = register_for_notifications_request.topic.as_ref() else {
+            return Err(ServiceInvocationError::InvalidArgument(
+                "No topic defined in request".to_string(),
+            ));
+        };
 
         // Interact with notification manager backend
         let se = NotificationEvent::AddNotifyee {
             subscriber: source.clone(),
-            topic: subscription_request.topic.clone().unwrap_or_default(),
+            topic: topic.clone(),
         };
 
         if let Err(e) = self.notification_sender.send(se).await {
-            return Err(ServiceInvocationError::Internal(format!(
-                "Error communicating with notification manager: {e}"
-            )));
+            error!("Error communicating with subscription manager: {e}");
+            return Err(ServiceInvocationError::Internal(
+                "Error communicating with notification manager".to_string(),
+            ));
         }
 
         // Build and return result

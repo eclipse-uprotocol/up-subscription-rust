@@ -59,19 +59,25 @@ impl RequestHandler for UnubscribeRequestHandler {
             &request_payload,
             message_attributes,
         )?;
+        let Some(topic) = unsubscribe_request.topic.as_ref() else {
+            return Err(ServiceInvocationError::InvalidArgument(
+                "No topic defined in request".to_string(),
+            ));
+        };
 
         let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
         let se = SubscriptionEvent::RemoveSubscription {
             subscriber: source.clone(),
-            topic: unsubscribe_request.topic.clone().unwrap_or_default(),
+            topic: topic.clone(),
             respond_to,
         };
 
         // Interact with subscription manager backend
         if let Err(e) = self.subscription_sender.send(se).await {
-            return Err(ServiceInvocationError::Internal(format!(
-                "Error communicating with subscription manager: {e}"
-            )));
+            error!("Error communicating with subscription manager: {e}");
+            return Err(ServiceInvocationError::Internal(
+                "Error communicating with subscription manager".to_string(),
+            ));
         }
         let Ok(status) = receive_from.await else {
             return Err(ServiceInvocationError::Internal(
@@ -95,7 +101,7 @@ impl RequestHandler for UnubscribeRequestHandler {
         }
         if let Err(e) = receive_from.await {
             // Not returning an error here, as update notification is not a core concern wrt the actual subscription management
-            error!("Error sending subscription-change update notification: {e}");
+            warn!("Error sending subscription-change update notification: {e}");
         };
 
         // Build and return result

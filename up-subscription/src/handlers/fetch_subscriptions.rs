@@ -12,6 +12,7 @@
  ********************************************************************************/
 
 use async_trait::async_trait;
+use log::*;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
@@ -97,9 +98,10 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         };
 
         if let Err(e) = self.subscription_sender.send(se).await {
-            return Err(ServiceInvocationError::Internal(format!(
-                "Error communicating with subscription manager: {e}"
-            )));
+            error!("Error communicating with subscription manager: {e}");
+            return Err(ServiceInvocationError::Internal(
+                "Error communicating with subscription manager".to_string(),
+            ));
         }
         let Ok(fetch_subscriptions_response) = receive_from.await else {
             return Err(ServiceInvocationError::Internal(

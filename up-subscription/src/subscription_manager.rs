@@ -19,7 +19,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 use up_rust::{LocalUriProvider, UTransport};
 
 use up_rust::{
-    communication::CallOptions,
+    communication::{CallOptions, InMemoryRpcClient, RpcClient},
     core::usubscription::{
         State as TopicState, SubscriptionRequest, SubscriptionResponse, SubscriptionStatus,
         UnsubscribeRequest, RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE, USUBSCRIPTION_TYPE_ID,
@@ -28,9 +28,6 @@ use up_rust::{
     UCode, UPriority, UStatus, UUri,
 };
 
-use up_rust::communication::{InMemoryRpcClient, RpcClient};
-
-use crate::USubscriptionConfiguration;
 use crate::{helpers, usubscription::UP_REMOTE_TTL};
 
 // This is the core business logic for handling and tracking subscriptions. It is currently implemented as a single event-consuming
@@ -120,7 +117,7 @@ enum Event {
 // Core business logic of subscription management - includes container data types for tracking subscriptions and remote subscriptions.
 // Interfacing with this purely works via channels, so we do not have to deal with mutexes and similar concepts.
 pub(crate) async fn handle_message(
-    uri_provider: Arc<USubscriptionConfiguration>,
+    uri_provider: Arc<dyn LocalUriProvider>,
     transport: Arc<dyn UTransport>,
     mut command_receiver: Receiver<SubscriptionEvent>,
     shutdown: Arc<Notify>,
@@ -174,7 +171,7 @@ pub(crate) async fn handle_message(
 
                     let mut state = TopicState::SUBSCRIBED; // everything in topic_subscribers is considered SUBSCRIBED by default
 
-                    if topic.is_remote_authority(&uri_provider.authority_name) {
+                    if topic.is_remote_authority(&uri_provider.get_authority()) {
                         // for remote_topics, we explicitly track state due to the _PENDING scenarios
                         state = *remote_topics
                             .get(&topic)
@@ -219,7 +216,7 @@ pub(crate) async fn handle_message(
                         entry.remove(&subscriber);
 
                         // if topic is remote, we were tracking this remote topic already, and this was the last subscriber
-                        if topic.is_remote_authority(&uri_provider.authority_name)
+                        if topic.is_remote_authority(&uri_provider.get_authority())
                             && remote_topics.contains_key(&topic)
                             && entry.is_empty()
                         {

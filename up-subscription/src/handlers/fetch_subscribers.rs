@@ -12,6 +12,7 @@
  ********************************************************************************/
 
 use async_trait::async_trait;
+use log::*;
 use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
@@ -56,13 +57,13 @@ impl RequestHandler for FetchSubscribersRequestHandler {
                 &request_payload,
                 message_attributes,
             )?;
-
         let FetchSubscribersRequest { topic, offset, .. } = fetch_subscribers_request;
         let Some(topic) = topic.into_option() else {
             return Err(ServiceInvocationError::InvalidArgument(
                 "No topic defined in request".to_string(),
             ));
         };
+
         // Interact with subscription manager backend
         let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
         let se = SubscriptionEvent::FetchSubscribers {
@@ -72,9 +73,10 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         };
 
         if let Err(e) = self.subscription_sender.send(se).await {
-            return Err(ServiceInvocationError::Internal(format!(
-                "Error communicating with subscription manager: {e}"
-            )));
+            error!("Error communicating with subscription manager: {e}");
+            return Err(ServiceInvocationError::Internal(
+                "Error communicating with subscription manager".to_string(),
+            ));
         }
         let Ok(fetch_subscribers_response) = receive_from.await else {
             return Err(ServiceInvocationError::Internal(
