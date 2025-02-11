@@ -163,44 +163,16 @@ pub(crate) async fn handle_message(
                     topic,
                     respond_to,
                 } => {
-                    // Add new subscriber to topic subscription tracker (create new entries as necessary)
-                    let is_new = topic_subscribers
-                        .entry(topic.clone())
-                        .or_default()
-                        .insert(subscriber);
-
-                    let mut state = TopicState::SUBSCRIBED; // everything in topic_subscribers is considered SUBSCRIBED by default
-
-                    if topic.is_remote_authority(&uri_provider.get_authority()) {
-                        // for remote_topics, we explicitly track state due to the _PENDING scenarios
-                        state = *remote_topics
-                            .get(&topic)
-                            .unwrap_or(&TopicState::SUBSCRIBE_PENDING);
-
-                        remote_topics.entry(topic.clone()).or_insert(state);
-                        if is_new {
-                            // this is the first subscriber to this (remote) topic, so perform remote subscription
-                            let uri_provider_clone = uri_provider.clone();
-                            let transport_clone = transport.clone();
-                            let remote_sub_sender_clone = remote_sub_sender.clone();
-
-                            helpers::spawn_and_log_error(async move {
-                                remote_subscribe(
-                                    topic,
-                                    uri_provider_clone,
-                                    transport_clone,
-                                    remote_sub_sender_clone,
-                                )
-                                .await?;
-                                Ok(())
-                            });
-                        }
-                    }
                     if respond_to
-                        .send(SubscriptionStatus {
-                            state: state.into(),
-                            ..Default::default()
-                        })
+                        .send(add_subscription(
+                            uri_provider.clone(),
+                            transport.clone(),
+                            remote_sub_sender.clone(),
+                            &mut remote_topics,
+                            &mut topic_subscribers,
+                            subscriber,
+                            topic,
+                        ))
                         .is_err()
                     {
                         error!("Problem with internal communication");
@@ -211,49 +183,16 @@ pub(crate) async fn handle_message(
                     topic,
                     respond_to,
                 } => {
-                    if let Some(entry) = topic_subscribers.get_mut(&topic) {
-                        // check if we even know this subscriber-topic combo
-                        entry.remove(&subscriber);
-
-                        // if topic is remote, we were tracking this remote topic already, and this was the last subscriber
-                        if topic.is_remote_authority(&uri_provider.get_authority())
-                            && remote_topics.contains_key(&topic)
-                            && entry.is_empty()
-                        {
-                            // until remote ubsubscribe confirmed (below), set remote topics tracker state to UNSUBSCRIBE_PENDING
-                            if let Some(entry) = remote_topics.get_mut(&topic) {
-                                *entry = TopicState::UNSUBSCRIBE_PENDING;
-                            }
-
-                            // this was the last subscriber to this (remote) topic, so perform remote unsubscription
-                            let topic_clone = topic.clone();
-                            let uri_provider_clone = uri_provider.clone();
-                            let transport_clone = transport.clone();
-                            let remote_sub_sender_clone = remote_sub_sender.clone();
-
-                            helpers::spawn_and_log_error(async move {
-                                remote_unsubscribe(
-                                    topic_clone,
-                                    uri_provider_clone,
-                                    transport_clone,
-                                    remote_sub_sender_clone,
-                                )
-                                .await?;
-                                Ok(())
-                            });
-                        }
-                    }
-                    // If this was the last subscriber to topic, remote the entire subscription entry from tracker
-                    if topic_subscribers.get(&topic).is_some_and(|e| e.is_empty()) {
-                        topic_subscribers.remove(&topic);
-                    }
-
                     if respond_to
-                        .send(SubscriptionStatus {
-                            // Whatever happens with the remote topic state - as far as the local client is concerned, it has now UNSUBSCRIBED from this topic
-                            state: TopicState::UNSUBSCRIBED.into(),
-                            ..Default::default()
-                        })
+                        .send(remove_subscription(
+                            uri_provider.clone(),
+                            transport.clone(),
+                            remote_sub_sender.clone(),
+                            &mut remote_topics,
+                            &mut topic_subscribers,
+                            subscriber,
+                            topic,
+                        ))
                         .is_err()
                     {
                         error!("Problem with internal communication");
@@ -264,32 +203,10 @@ pub(crate) async fn handle_message(
                     offset,
                     respond_to,
                 } => {
-                    // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
-                    // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
-                    let mut subscriber_response: SubscribersResponse = (vec![], false);
-
-                    if let Some(subs) = topic_subscribers.get(&topic) {
-                        let mut subscribers: Vec<&UUri> = subs.iter().collect();
-
-                        if let Some(offset) = offset {
-                            subscribers.drain(..offset as usize);
-                        }
-
-                        // split up result list, to make sense of has_more_records field
-                        let mut has_more = false;
-                        if subscribers.len() > UP_MAX_FETCH_SUBSCRIBERS_LEN {
-                            subscribers.truncate(UP_MAX_FETCH_SUBSCRIBERS_LEN);
-                            has_more = true;
-                        }
-
-                        let mut subscriber_infos = vec![];
-                        for subscriber_uri in subscribers {
-                            subscriber_infos.push(subscriber_uri.clone());
-                        }
-
-                        subscriber_response = (subscriber_infos, has_more);
-                    }
-                    if respond_to.send(subscriber_response).is_err() {
+                    if respond_to
+                        .send(fetch_subscribers(&topic_subscribers, topic, offset))
+                        .is_err()
+                    {
                         error!("Problem with internal communication");
                     }
                 }
@@ -298,91 +215,15 @@ pub(crate) async fn handle_message(
                     offset,
                     respond_to,
                 } => {
-                    let mut fetch_subscriptions_response: SubscriptionsResponse = (vec![], false);
-                    match request {
-                        RequestKind::Subscriber(subscriber) => {
-                            // This is where someone wants "all subscriptions of a specific subscriber",
-                            // which isn't very straighforward with the way we do bookeeping, so
-                            // first, get all entries from our topic-subscribers ledger that contain the requested SubscriberInfo
-                            let subscriptions: Vec<(&UUri, &HashSet<UUri>)> = topic_subscribers
-                                .iter()
-                                .filter(|entry| entry.1.contains(&subscriber))
-                                .collect();
-
-                            // from that set, we use the topics and build Subscription response objects
-                            let mut result_subs: Vec<SubscriptionEntry> = Vec::new();
-                            for (topic, _) in subscriptions {
-                                // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
-                                // if nothing is available there we fall back to default assumption that any
-                                // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
-                                let state =
-                                    remote_topics.get(topic).unwrap_or(&TopicState::SUBSCRIBED);
-
-                                let subscription = SubscriptionEntry {
-                                    topic: topic.clone(),
-                                    subscriber: subscriber.clone(),
-                                    status: SubscriptionStatus {
-                                        state: (*state).into(),
-                                        ..Default::default()
-                                    },
-                                };
-                                result_subs.push(subscription);
-                            }
-
-                            if let Some(offset) = offset {
-                                result_subs.drain(..offset as usize);
-                            }
-
-                            // split up result list, to make sense of has_more_records field
-                            let mut has_more = false;
-                            if result_subs.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
-                                result_subs.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
-                                has_more = true;
-                            }
-
-                            fetch_subscriptions_response = (result_subs, has_more);
-                        }
-                        RequestKind::Topic(topic) => {
-                            if let Some(subs) = topic_subscribers.get(&topic) {
-                                let mut subscribers: Vec<&UUri> = subs.iter().collect();
-
-                                if let Some(offset) = offset {
-                                    subscribers.drain(..offset as usize);
-                                }
-
-                                // split up result list, to make sense of has_more_records field
-                                let mut has_more = false;
-                                if subscribers.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
-                                    subscribers.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
-                                    has_more = true;
-                                }
-
-                                let mut result_subs: Vec<SubscriptionEntry> = Vec::new();
-                                for subscriber in subscribers {
-                                    // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
-                                    // if nothing is available there we fall back to default assumption that any
-                                    // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
-                                    let state = remote_topics
-                                        .get(&topic)
-                                        .unwrap_or(&TopicState::SUBSCRIBED);
-
-                                    let subscription = SubscriptionEntry {
-                                        topic: topic.clone(),
-                                        subscriber: subscriber.clone(),
-                                        status: SubscriptionStatus {
-                                            state: (*state).into(),
-                                            ..Default::default()
-                                        },
-                                    };
-                                    result_subs.push(subscription);
-                                }
-
-                                fetch_subscriptions_response = (result_subs, has_more);
-                            }
-                        }
-                    }
-
-                    if respond_to.send(fetch_subscriptions_response).is_err() {
+                    if respond_to
+                        .send(fetch_subscriptions(
+                            &topic_subscribers,
+                            &remote_topics,
+                            request,
+                            offset,
+                        ))
+                        .is_err()
+                    {
                         error!("Problem with internal communication");
                     };
                 }
@@ -419,6 +260,216 @@ pub(crate) async fn handle_message(
             },
         }
     }
+}
+
+// Add a subscription relationship to bookkeeping, initiate remote subscribe request if neccessary
+#[allow(clippy::mutable_key_type)]
+fn add_subscription(
+    uri_provider: Arc<dyn LocalUriProvider>,
+    transport: Arc<dyn UTransport>,
+    remote_sub_sender: mpsc::UnboundedSender<RemoteSubscriptionEvent>,
+    remote_topics: &mut HashMap<UUri, TopicState>,
+    topic_subscribers: &mut HashMap<UUri, HashSet<UUri>>,
+    subscriber: UUri,
+    topic: UUri,
+) -> SubscriptionStatus {
+    // Add new subscriber to topic subscription tracker (create new entries as necessary)
+    let is_new = topic_subscribers
+        .entry(topic.clone())
+        .or_default()
+        .insert(subscriber);
+
+    let mut state = TopicState::SUBSCRIBED; // everything in topic_subscribers is considered SUBSCRIBED by default
+
+    if topic.is_remote_authority(&uri_provider.get_authority()) {
+        // for remote_topics, we explicitly track state due to the _PENDING scenarios
+        state = *remote_topics
+            .get(&topic)
+            .unwrap_or(&TopicState::SUBSCRIBE_PENDING);
+
+        remote_topics.entry(topic.clone()).or_insert(state);
+        if is_new {
+            // this is the first subscriber to this (remote) topic, so perform remote subscription
+            helpers::spawn_and_log_error(async move {
+                remote_subscribe(topic, uri_provider, transport, remote_sub_sender).await?;
+                Ok(())
+            });
+        }
+    }
+    SubscriptionStatus {
+        state: state.into(),
+        ..Default::default()
+    }
+}
+
+// Remove a subscription relationship to bookkeeping, initiate remote unsubscribe request if neccessary
+#[allow(clippy::mutable_key_type)]
+fn remove_subscription(
+    uri_provider: Arc<dyn LocalUriProvider>,
+    transport: Arc<dyn UTransport>,
+    remote_sub_sender: mpsc::UnboundedSender<RemoteSubscriptionEvent>,
+    remote_topics: &mut HashMap<UUri, TopicState>,
+    topic_subscribers: &mut HashMap<UUri, HashSet<UUri>>,
+    subscriber: UUri,
+    topic: UUri,
+) -> SubscriptionStatus {
+    if let Some(entry) = topic_subscribers.get_mut(&topic) {
+        // check if we even know this subscriber-topic combo
+        entry.remove(&subscriber);
+
+        // if topic is remote, we were tracking this remote topic already, and this was the last subscriber
+        if topic.is_remote_authority(&uri_provider.get_authority())
+            && remote_topics.contains_key(&topic)
+            && entry.is_empty()
+        {
+            // until remote ubsubscribe confirmed (below), set remote topics tracker state to UNSUBSCRIBE_PENDING
+            if let Some(entry) = remote_topics.get_mut(&topic) {
+                *entry = TopicState::UNSUBSCRIBE_PENDING;
+            }
+
+            // this was the last subscriber to this (remote) topic, so perform remote unsubscription
+            let topic_clone = topic.clone();
+            helpers::spawn_and_log_error(async move {
+                remote_unsubscribe(topic_clone, uri_provider, transport, remote_sub_sender).await?;
+                Ok(())
+            });
+        }
+    }
+    // If this was the last subscriber to topic, remote the entire subscription entry from tracker
+    if topic_subscribers.get(&topic).is_some_and(|e| e.is_empty()) {
+        topic_subscribers.remove(&topic);
+    }
+
+    SubscriptionStatus {
+        // Whatever happens with the remote topic state - as far as the local client is concerned, it has now UNSUBSCRIBED from this topic
+        state: TopicState::UNSUBSCRIBED.into(),
+        ..Default::default()
+    }
+}
+
+// Fetch all subscribers of a topicf
+#[allow(clippy::mutable_key_type)]
+fn fetch_subscribers(
+    topic_subscribers: &HashMap<UUri, HashSet<UUri>>,
+    topic: UUri,
+    offset: Option<u32>,
+) -> SubscribersResponse {
+    let mut subscriber_infos = vec![];
+    let mut has_more = false;
+
+    // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
+    // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
+    if let Some(subs) = topic_subscribers.get(&topic) {
+        let mut subscribers: Vec<&UUri> = subs.iter().collect();
+
+        if let Some(offset) = offset {
+            subscribers.drain(..offset as usize);
+        }
+
+        // split up result list, to make sense of has_more_records field
+        if subscribers.len() > UP_MAX_FETCH_SUBSCRIBERS_LEN {
+            subscribers.truncate(UP_MAX_FETCH_SUBSCRIBERS_LEN);
+            has_more = true;
+        }
+
+        for subscriber_uri in subscribers {
+            subscriber_infos.push(subscriber_uri.clone());
+        }
+    }
+    (subscriber_infos, has_more)
+}
+
+// Fetch all subscriptions of a topic or subscribers
+#[allow(clippy::mutable_key_type)]
+fn fetch_subscriptions(
+    topic_subscribers: &HashMap<UUri, HashSet<UUri>>,
+    remote_topics: &HashMap<UUri, TopicState>,
+    request: RequestKind,
+    offset: Option<u32>,
+) -> SubscriptionsResponse {
+    let mut fetch_subscriptions_response: SubscriptionsResponse = (vec![], false);
+
+    match request {
+        RequestKind::Subscriber(subscriber) => {
+            // This is where someone wants "all subscriptions of a specific subscriber",
+            // which isn't very straighforward with the way we do bookeeping, so
+            // first, get all entries from our topic-subscribers ledger that contain the requested SubscriberInfo
+            let subscriptions: Vec<(&UUri, &HashSet<UUri>)> = topic_subscribers
+                .iter()
+                .filter(|entry| entry.1.contains(&subscriber))
+                .collect();
+
+            // from that set, we use the topics and build Subscription response objects
+            let mut result_subs: Vec<SubscriptionEntry> = Vec::new();
+            for (topic, _) in subscriptions {
+                // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
+                // if nothing is available there we fall back to default assumption that any
+                // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
+                let state = remote_topics.get(topic).unwrap_or(&TopicState::SUBSCRIBED);
+
+                let subscription = SubscriptionEntry {
+                    topic: topic.clone(),
+                    subscriber: subscriber.clone(),
+                    status: SubscriptionStatus {
+                        state: (*state).into(),
+                        ..Default::default()
+                    },
+                };
+                result_subs.push(subscription);
+            }
+
+            if let Some(offset) = offset {
+                result_subs.drain(..offset as usize);
+            }
+
+            // split up result list, to make sense of has_more_records field
+            let mut has_more = false;
+            if result_subs.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
+                result_subs.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
+                has_more = true;
+            }
+
+            fetch_subscriptions_response = (result_subs, has_more);
+        }
+        RequestKind::Topic(topic) => {
+            if let Some(subs) = topic_subscribers.get(&topic) {
+                let mut subscribers: Vec<&UUri> = subs.iter().collect();
+
+                if let Some(offset) = offset {
+                    subscribers.drain(..offset as usize);
+                }
+
+                // split up result list, to make sense of has_more_records field
+                let mut has_more = false;
+                if subscribers.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
+                    subscribers.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
+                    has_more = true;
+                }
+
+                let mut result_subs: Vec<SubscriptionEntry> = Vec::new();
+                for subscriber in subscribers {
+                    // get potentially deviating state for remote topics (e.g. SUBSCRIBE_PENDING),
+                    // if nothing is available there we fall back to default assumption that any
+                    // entry in topic_subscribers is there because a client SUBSCRIBED to a topic.
+                    let state = remote_topics.get(&topic).unwrap_or(&TopicState::SUBSCRIBED);
+
+                    let subscription = SubscriptionEntry {
+                        topic: topic.clone(),
+                        subscriber: subscriber.clone(),
+                        status: SubscriptionStatus {
+                            state: (*state).into(),
+                            ..Default::default()
+                        },
+                    };
+                    result_subs.push(subscription);
+                }
+
+                fetch_subscriptions_response = (result_subs, has_more);
+            }
+        }
+    }
+
+    fetch_subscriptions_response
 }
 
 // Perform remote topic subscription
