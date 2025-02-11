@@ -17,7 +17,7 @@ use log::*;
 use std::sync::Arc;
 use tokio::signal;
 
-use up_rust::LocalUriProvider;
+use up_rust::{LocalUriProvider, UTransport};
 use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscriptionService};
 
 #[cfg(unix)]
@@ -123,7 +123,7 @@ async fn main() {
     }
     up_subscription::init_once();
 
-    let config = match config_from_args(&args) {
+    let _config = match config_from_args(&args) {
         Err(e) => {
             panic!("Configuration error: {e}")
         }
@@ -131,41 +131,42 @@ async fn main() {
     };
 
     // Deal with transport module that we're to use
-    let transport = match args.transport {
+    let _transport: Option<Arc<dyn UTransport>> = match args.transport {
         #[cfg(feature = "mqtt5")]
         Transport::Mqtt5 => Some(
-            get_mqtt5_transport(config.clone(), args.mqtt_client_options)
+            get_mqtt5_transport(_config.clone(), args.mqtt_client_options)
                 .await
                 .inspect_err(|e| panic!("Error setting up MQTT5 transport: {}", e.get_message()))
                 .unwrap(),
         ),
         #[cfg(feature = "socket")]
         Transport::Socket => Some(
-            get_socket_transport(config.clone())
+            get_socket_transport(_config.clone())
                 .await
                 .inspect_err(|e| panic!("Error setting up socket transport: {}", e.get_message()))
                 .unwrap(),
         ),
         #[cfg(feature = "zenoh")]
         Transport::Zenoh => Some(
-            get_zenoh_transport(config.clone())
+            get_zenoh_transport(_config.clone())
                 .await
                 .inspect_err(|e| panic!("Error setting up Zenoh transport: {}", e.get_message()))
                 .unwrap(),
         ),
         Transport::None => {
-            panic!("No valid transport or client implementation available");
+            panic!("No valid transport protocol");
         }
     };
 
     // Set up and run USubscription service
-    let mut ustop = USubscriptionService::run(config.clone(), transport.as_ref().unwrap().clone())
-        .await
-        .expect("Error starting usubscription service");
+    let mut ustop =
+        USubscriptionService::run(_config.clone(), _transport.as_ref().unwrap().clone())
+            .await
+            .expect("Error starting usubscription service");
 
     info!(
         "Usubscription service running and listeners up on {}",
-        config.get_source_uri()
+        _config.get_source_uri()
     );
 
     // Daemonize or wait for shutdown signal
