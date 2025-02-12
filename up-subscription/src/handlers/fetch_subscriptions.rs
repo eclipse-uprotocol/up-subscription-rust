@@ -100,36 +100,37 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         if let Err(e) = self.subscription_sender.send(se).await {
             error!("Error communicating with subscription manager: {e}");
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with subscription manager".to_string(),
+                "Error processing request".to_string(),
             ));
         }
         let Ok(fetch_subscriptions_response) = receive_from.await else {
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with subscription manager".to_string(),
+                "Error processing request".to_string(),
             ));
         };
 
         // Build and return result
         let (subscriptions, has_more) = fetch_subscriptions_response;
-        let mut subscription_list: Vec<Subscription> = vec![];
-
-        for SubscriptionEntry {
-            topic: topic_entry,
-            subscriber: subscriber_entry,
-            status: status_entry,
-        } in subscriptions
-        {
-            subscription_list.push(Subscription {
-                topic: Some(topic_entry).into(),
-                subscriber: Some(SubscriberInfo {
-                    uri: Some(subscriber_entry).into(),
+        let subscription_list: Vec<Subscription> = subscriptions
+            .iter()
+            .map(
+                |SubscriptionEntry {
+                     topic,
+                     subscriber,
+                     status,
+                 }| Subscription {
+                    topic: Some(topic.clone()).into(),
+                    subscriber: Some(SubscriberInfo {
+                        uri: Some(subscriber.clone()).into(),
+                        ..Default::default()
+                    })
+                    .into(),
+                    status: Some(status.clone()).into(),
                     ..Default::default()
-                })
-                .into(),
-                status: Some(status_entry).into(),
-                ..Default::default()
-            });
-        }
+                },
+            )
+            .collect();
+
         let fetch_subscriptions_response = FetchSubscriptionsResponse {
             subscriptions: subscription_list,
             has_more_records: Some(has_more),

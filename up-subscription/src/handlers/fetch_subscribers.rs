@@ -75,24 +75,24 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         if let Err(e) = self.subscription_sender.send(se).await {
             error!("Error communicating with subscription manager: {e}");
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with subscription manager".to_string(),
+                "Error processing request".to_string(),
             ));
         }
         let Ok(fetch_subscribers_response) = receive_from.await else {
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with subscription manager".to_string(),
+                "Error processing request".to_string(),
             ));
         };
 
         // Build and return result
         let (subscribers, has_more) = fetch_subscribers_response;
-        let mut subscriber_infos: Vec<SubscriberInfo> = vec![];
-        for subscriber in subscribers {
-            subscriber_infos.push(SubscriberInfo {
-                uri: Some(subscriber).into(),
+        let subscriber_infos = subscribers
+            .iter()
+            .map(|subscriber| SubscriberInfo {
+                uri: Some(subscriber.clone()).into(),
                 ..Default::default()
-            });
-        }
+            })
+            .collect();
         let fetch_subscribers_response = FetchSubscribersResponse {
             subscribers: subscriber_infos,
             has_more_records: Some(has_more),
@@ -104,7 +104,7 @@ impl RequestHandler for FetchSubscribersRequestHandler {
                 ServiceInvocationError::Internal(format!("Error building response payload: {e}"))
             })?;
 
-        return Ok(Some(response_payload));
+        Ok(Some(response_payload))
     }
 }
 

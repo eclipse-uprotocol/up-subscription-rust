@@ -20,14 +20,11 @@ pub(crate) async fn get_mqtt5_transport(
     uri_provider: Arc<dyn LocalUriProvider>,
     client_options: MqttClientOptions,
 ) -> Result<Arc<dyn UTransport>, UStatus> {
-    match Mqtt5Transport::new(
+    Ok(Mqtt5Transport::new(
         TransportMode::InVehicle,
         client_options,
         uri_provider.get_authority(),
     )
     .await
-    {
-        Ok(t) => Ok(Arc::new(t)),
-        Err(e) => Err(e),
-    }
+    .map(Arc::new)?)
 }

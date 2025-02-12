@@ -64,11 +64,10 @@ impl RequestHandler for RegisterNotificationsRequestHandler {
             subscriber: source.clone(),
             topic: topic.clone(),
         };
-
         if let Err(e) = self.notification_sender.send(se).await {
-            error!("Error communicating with subscription manager: {e}");
+            error!("Error communicating with notification manager: {e}");
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with notification manager".to_string(),
+                "Error processing request".to_string(),
             ));
         }
 

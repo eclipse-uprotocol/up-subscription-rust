@@ -59,9 +59,9 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
         };
 
         if let Err(e) = self.notification_sender.send(se).await {
-            error!("Error communicating with subscription manager: {e}");
+            error!("Error communicating with notification manager: {e}");
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with notification manager".to_string(),
+                "Error processing requestr".to_string(),
             ));
         }
 

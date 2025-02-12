@@ -76,12 +76,12 @@ impl RequestHandler for UnubscribeRequestHandler {
         if let Err(e) = self.subscription_sender.send(se).await {
             error!("Error communicating with subscription manager: {e}");
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with subscription manager".to_string(),
+                "Error processing request".to_string(),
             ));
         }
         let Ok(status) = receive_from.await else {
             return Err(ServiceInvocationError::Internal(
-                "Error communicating with subscription manager".to_string(),
+                "Error processing request".to_string(),
             ));
         };
 
