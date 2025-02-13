@@ -14,22 +14,39 @@
 # Config file for cargo deny
 # For all options see https://github.com/EmbarkStudios/cargo-deny/blob/main/deny.template.toml
 
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
+
 [bans]
 multiple-versions = "allow"
 
 # If you add a license in the following section also consider changing about.toml
 [licenses]
-allow = ["Apache-2.0", "EPL-1.0", "EPL-2.0", "MIT"]
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "EPL-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+exceptions = [{ name = "ring", allow = ["OpenSSL"] }]
 #private = { ignore = true }
-exceptions = [{ name = "unicode-ident", allow = ["Unicode-3.0"] }]
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 # THIS IS ONLY TEMPORARY, UNTIL up-transport-socket-rust MERGES INITIAL PR AND PROPERLY DECLARES ITS LICENSE
-[licenses.private]
-ignore = true
-ignore-sources = [
-    "https://github.com/eclipse-uprotocol/up-transport-socket.git",
-]
+#[licenses.private]
+#ignore = true
+#ignore-sources = [
+#    "https://github.com/eclipse-uprotocol/up-transport-socket.git",
+#]
 
-# TEMPORARY until this can be pulled from crates.io releases
-[sources]
-allow-git = ["https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust.git"]
+#[sources]
+#allow-git = ["https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust.git"]
