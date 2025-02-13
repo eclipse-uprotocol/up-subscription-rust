@@ -18,11 +18,11 @@ use up_transport_mqtt5::{Mqtt5Transport, MqttClientOptions, TransportMode};
 
 pub(crate) async fn get_mqtt5_transport(
     uri_provider: Arc<dyn LocalUriProvider>,
-    client_options: MqttClientOptions,
+    mqtt5_args: MqttClientOptions,
 ) -> Result<Arc<dyn UTransport>, UStatus> {
     Ok(Mqtt5Transport::new(
         TransportMode::InVehicle,
-        client_options,
+        mqtt5_args,
         uri_provider.get_authority(),
     )
     .await

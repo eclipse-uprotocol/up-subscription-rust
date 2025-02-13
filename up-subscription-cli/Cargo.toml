@@ -28,10 +28,10 @@ license = false
 eula = false
 
 [features]
-default = ["mqtt5"]
+default = ["zenoh"]
 socket = ["dep:up-transport-socket-rust"]
 mqtt5 = ["dep:up-transport-mqtt5"]
-zenoh = ["dep:up-transport-zenoh"]
+zenoh = ["dep:up-transport-zenoh", "dep:serde_json"]
 
 [dependencies]
 async-trait = { workspace = true }
@@ -41,13 +41,14 @@ env_logger = { workspace = true }
 futures = { workspace = true }
 log = { workspace = true }
 protobuf = { workspace = true }
+serde_json = { version = "1.0.138", optional = true }
 tokio = { workspace = true }
 up-rust = { workspace = true }
 up-subscription = { workspace = true }
 up-transport-mqtt5 = { git = "https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust.git", rev = "8c15c38ecfa54e74eb1ee5570b1cc68ca34d0b8c", optional = true }
-# up-transport-mqtt5 = { version = "0.4.0", optional = true }
+#up-transport-mqtt5 = { version = "0.2.0", optional = true }
 up-transport-socket-rust = { git = "https://github.com/eclipse-uprotocol/up-transport-socket.git", rev = "78ac7ff6acba7090a79fc36b2ddca49bd93e7188", optional = true }
-up-transport-zenoh = { version = "0.4.0", optional = true }
+up-transport-zenoh = { version = "0.5.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = { version = "0.5" }

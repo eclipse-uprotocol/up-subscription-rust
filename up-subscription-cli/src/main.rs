@@ -26,6 +26,9 @@ use daemonize::Daemonize;
 #[cfg(feature = "mqtt5")]
 use up_transport_mqtt5::MqttClientOptions;
 
+#[cfg(feature = "zenoh")]
+use crate::transport::zenoh::ZenohArgs;
+
 mod transport;
 #[cfg(feature = "mqtt5")]
 use transport::get_mqtt5_transport;
@@ -105,7 +108,11 @@ pub(crate) struct Args {
 
     #[cfg(feature = "mqtt5")]
     #[command(flatten)]
-    mqtt_client_options: MqttClientOptions,
+    mqtt_args: MqttClientOptions,
+
+    #[cfg(feature = "zenoh")]
+    #[command(flatten)]
+    zenoh_args: ZenohArgs,
 }
 
 #[tokio::main]
@@ -134,7 +141,7 @@ async fn main() {
     let transport: Option<Arc<dyn UTransport>> = match args.transport {
         #[cfg(feature = "mqtt5")]
         Transport::Mqtt5 => Some(
-            get_mqtt5_transport(_config.clone(), args.mqtt_client_options)
+            get_mqtt5_transport(_config.clone(), args.mqtt_args)
                 .await
                 .inspect_err(|e| panic!("Error setting up MQTT5 transport: {}", e.get_message()))
                 .unwrap(),
@@ -148,7 +155,7 @@ async fn main() {
         ),
         #[cfg(feature = "zenoh")]
         Transport::Zenoh => Some(
-            get_zenoh_transport(_config.clone())
+            get_zenoh_transport(_config.clone(), args.zenoh_args)
                 .await
                 .inspect_err(|e| panic!("Error setting up Zenoh transport: {}", e.get_message()))
                 .unwrap(),

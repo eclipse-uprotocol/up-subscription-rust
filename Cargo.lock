@@ -3103,26 +3103,6 @@ dependencies = [
 
 [[package]]
 name = "up-rust"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30118ab07c7ca420e2196bbc0f6f380b3100928d03ec1cd960f9220472f48f1a"
-dependencies = [
- "async-trait",
- "bytes",
- "mediatype",
- "protobuf",
- "protobuf-codegen",
- "protoc-bin-vendored",
- "rand",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "uriparse",
- "uuid-simd",
-]
-
-[[package]]
-name = "up-rust"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f15004fd944d75b810f4dedb9d3e07435c91ef0c6f7ec594ffd2ecfa1672aa0b"
@@ -3172,6 +3152,7 @@ dependencies = [
  "log",
  "mockall",
  "protobuf",
+ "serde_json",
  "test-case",
  "tokio",
  "up-rust 0.4.0",
@@ -3215,9 +3196,9 @@ dependencies = [
 
 [[package]]
 name = "up-transport-zenoh"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1dba40062ff410f59a9a34a51a9288c8ad92454e4199725264f4f9eaeb604fd9"
+checksum = "28ceb49d62f5f676a3def042ca5c70c69f70c6cff42eb2a11f4d14cab783cd86"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3228,7 +3209,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "up-rust 0.3.0",
+ "up-rust 0.4.0",
  "zenoh",
 ]
 
