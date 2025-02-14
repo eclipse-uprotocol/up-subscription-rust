@@ -40,13 +40,3 @@ exceptions = [{ name = "ring", allow = ["OpenSSL"] }]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
-
-# THIS IS ONLY TEMPORARY, UNTIL up-transport-socket-rust MERGES INITIAL PR AND PROPERLY DECLARES ITS LICENSE
-#[licenses.private]
-#ignore = true
-#ignore-sources = [
-#    "https://github.com/eclipse-uprotocol/up-transport-socket.git",
-#]
-
-#[sources]
-#allow-git = ["https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust.git"]
