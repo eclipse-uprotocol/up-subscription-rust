@@ -34,20 +34,20 @@ For a batteries-included approach to running up-subscription-rust, the `up-subsc
 
 */
 
-mod common {
-    pub(crate) mod helpers;
-}
-pub use common::helpers::init_once;
-pub(crate) use common::*;
+// public interface for configuring and starting usubscription service
+mod usubscription;
+pub use usubscription::*;
+mod configuration;
+pub use configuration::{ConfigurationError, USubscriptionConfiguration};
 
+// actors implementing the backend management logic for tracking subscriptions etc
 mod notification_manager;
 mod subscription_manager;
 
-mod configuration;
-pub use usubscription::*;
-mod usubscription;
-pub use configuration::{ConfigurationError, USubscriptionConfiguration};
+// persistent storage for backend data
+mod persistency;
 
+// RpcServer handler functions, first-level input validation and dispatch to backend logic
 pub(crate) mod handlers {
     pub(crate) mod fetch_subscribers;
     pub(crate) mod fetch_subscriptions;
@@ -56,6 +56,13 @@ pub(crate) mod handlers {
     pub(crate) mod unregister_for_notifications;
     pub(crate) mod unsubscribe;
 }
+
+// misc other little helpers and convenience functions
+mod common {
+    pub(crate) mod helpers;
+}
+pub use common::helpers::init_once;
+pub(crate) use common::*;
 
 #[cfg(test)]
 mod tests;

@@ -21,14 +21,19 @@ mod tests {
         oneshot, Notify,
     };
 
-    use up_rust::core::usubscription::{
-        usubscription_uri, State, SubscriptionStatus, Update, RESOURCE_ID_SUBSCRIPTION_CHANGE,
+    use up_rust::{
+        core::usubscription::{
+            usubscription_uri, State, SubscriptionStatus, Update, RESOURCE_ID_SUBSCRIPTION_CHANGE,
+        },
+        UMessage, UMessageBuilder, UUri, UUID,
     };
-    use up_rust::{UMessage, UMessageBuilder, UUri, UUID};
 
-    use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;
-    use crate::notification_manager::{notification_engine, NotificationEvent};
-    use crate::{helpers, test_lib};
+    use crate::{
+        configuration::DEFAULT_COMMAND_BUFFER_SIZE,
+        helpers,
+        notification_manager::{notification_engine, NotificationEvent},
+        test_lib, USubscriptionConfiguration,
+    };
 
     // Simple subscription-manager-actor front-end to use for testing
     struct CommandSender {
@@ -37,8 +42,18 @@ mod tests {
 
     impl CommandSender {
         fn new(expected_message: Vec<UMessage>) -> Self {
-            let shutdown_notification = Arc::new(Notify::new());
+            let config = Arc::new(
+                USubscriptionConfiguration::create(
+                    test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap(),
+            );
 
+            let shutdown_notification = Arc::new(Notify::new());
             let (command_sender, command_receiver) =
                 mpsc::channel::<NotificationEvent>(DEFAULT_COMMAND_BUFFER_SIZE);
             let transport_mock =
@@ -46,6 +61,7 @@ mod tests {
 
             helpers::spawn_and_log_error(async move {
                 notification_engine(
+                    config,
                     Arc::new(transport_mock),
                     command_receiver,
                     shutdown_notification,

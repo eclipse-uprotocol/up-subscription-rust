@@ -12,16 +12,20 @@
  ********************************************************************************/
 
 use log::*;
+#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Receiver, oneshot, Notify};
 
-use up_rust::core::usubscription::{
-    usubscription_uri, SubscriberInfo, SubscriptionStatus, Update, RESOURCE_ID_SUBSCRIPTION_CHANGE,
+use up_rust::{
+    core::usubscription::{
+        usubscription_uri, SubscriberInfo, SubscriptionStatus, Update,
+        RESOURCE_ID_SUBSCRIPTION_CHANGE,
+    },
+    UMessageBuilder, UTransport, UUri, UUID,
 };
-use up_rust::{UMessageBuilder, UTransport, UUri, UUID};
 
-use crate::{helpers, usubscription};
+use crate::{helpers, persistency, usubscription, USubscriptionConfiguration};
 
 // This is the core business logic for tracking and sending subscription update notifications. It is currently implemented as a single
 // event-consuming function `notification_engine()`, which is supposed to be spawned into a task, and process the various notification
@@ -59,6 +63,7 @@ pub(crate) enum NotificationEvent {
 // Keeps track of and sends subscription update notification to all registered update-notification channels.
 // Interfacing with this purely works via channels.
 pub(crate) async fn notification_engine(
+    configuration: Arc<USubscriptionConfiguration>,
     up_transport: Arc<dyn UTransport>,
     mut events: Receiver<NotificationEvent>,
     shutdown: Arc<Notify>,
@@ -66,8 +71,7 @@ pub(crate) async fn notification_engine(
     helpers::init_once();
 
     // keep track of which subscriber wants to be notified on which topic
-    #[allow(clippy::mutable_key_type)]
-    let mut notification_topics: HashMap<UUri, UUri> = HashMap::new();
+    let mut notifications = persistency::NotificationStore::new(&configuration);
 
     loop {
         let event = tokio::select! {
@@ -78,18 +82,31 @@ pub(crate) async fn notification_engine(
                 },
                 Some(event) => event,
             },
-            _ = shutdown.notified() => break,
+            _ = shutdown.notified() => {
+                break
+            },
         };
         match event {
             NotificationEvent::AddNotifyee { subscriber, topic } => {
-                if topic.is_event() {
-                    notification_topics.insert(subscriber, topic);
-                } else {
+                if !topic.is_event() {
                     error!("Topic UUri is not a valid event target");
+                    break;
                 }
+
+                match notifications.add_notifyee(&subscriber, &topic) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Persistency failure {e}")
+                    }
+                };
             }
             NotificationEvent::RemoveNotifyee { subscriber } => {
-                notification_topics.remove(&subscriber);
+                match notifications.remove_notifyee(&subscriber) {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Persistency failure {e}")
+                    }
+                };
             }
             NotificationEvent::StateChange {
                 subscriber,
@@ -127,51 +144,58 @@ pub(crate) async fn notification_engine(
                 }
 
                 // Send Update message to any dedicated registered notification-subscribers
-                for notification_topic in notification_topics.values() {
-                    debug!(
-                        "Sending notification to ({}): topic {}, subscriber {}, status {}",
-                        notification_topic.to_uri(usubscription::INCLUDE_SCHEMA),
-                        update
-                            .topic
-                            .as_ref()
-                            .unwrap_or_default()
-                            .to_uri(usubscription::INCLUDE_SCHEMA),
-                        update
-                            .subscriber
-                            .uri
-                            .as_ref()
-                            .unwrap_or_default()
-                            .to_uri(usubscription::INCLUDE_SCHEMA),
-                        update.status.as_ref().unwrap_or_default()
-                    );
-                    match UMessageBuilder::publish(notification_topic.clone())
-                        .with_message_id(UUID::build())
-                        .build_with_protobuf_payload(&update)
-                    {
-                        Err(e) => {
-                            error!("Error building susbcriber-specific update notification message: {e}");
-                        }
-                        Ok(update_msg) => {
-                            if let Err(e) = up_transport.send(update_msg).await {
-                                error!(
-                                    "Error sending susbcriber-specific subscription-change update notification: {e}"
+                if let Ok(topics) = notifications.get_topics() {
+                    for topic_entry in topics {
+                        debug!(
+                            "Sending notification to ({}): topic {}, subscriber {}, status {}",
+                            topic_entry.to_uri(usubscription::INCLUDE_SCHEMA),
+                            update
+                                .topic
+                                .as_ref()
+                                .unwrap_or_default()
+                                .to_uri(usubscription::INCLUDE_SCHEMA),
+                            update
+                                .subscriber
+                                .uri
+                                .as_ref()
+                                .unwrap_or_default()
+                                .to_uri(usubscription::INCLUDE_SCHEMA),
+                            update.status.as_ref().unwrap_or_default()
+                        );
+
+                        match UMessageBuilder::publish(topic_entry.clone())
+                            .build_with_protobuf_payload(&update)
+                        {
+                            Ok(update_msg) => {
+                                let _r = up_transport.send(update_msg).await.inspect_err(|e|
+                                    warn!("Error sending susbcriber-specific subscription-change update notification: {e}")
                                 );
+                            }
+                            Err(e) => {
+                                error!("Error building susbcriber-specific update notification message: {e}");
                             }
                         }
                     }
                 }
+
                 let _r = respond_to.send(());
             }
             #[cfg(test)]
             NotificationEvent::GetNotificationTopics { respond_to } => {
-                let _r = respond_to.send(notification_topics.clone());
+                let _r = respond_to.send(
+                    notifications
+                        .get_data()
+                        .expect("Error getting notification store contents"),
+                );
             }
             #[cfg(test)]
             NotificationEvent::SetNotificationTopics {
                 notification_topics_replacement,
                 respond_to,
             } => {
-                notification_topics = notification_topics_replacement;
+                notifications
+                    .set_data(notification_topics_replacement)
+                    .expect("Error setting notification store contents");
                 let _r = respond_to.send(());
             }
         }

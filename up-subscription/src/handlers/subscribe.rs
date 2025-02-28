@@ -13,13 +13,7 @@
 
 use async_trait::async_trait;
 use log::*;
-use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
-
-use crate::{
-    helpers,
-    {notification_manager::NotificationEvent, subscription_manager::SubscriptionEvent},
-};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
@@ -29,15 +23,20 @@ use up_rust::{
     UAttributes,
 };
 
+use crate::{
+    helpers,
+    {notification_manager::NotificationEvent, subscription_manager::SubscriptionEvent},
+};
+
 pub(crate) struct SubscriptionRequestHandler {
-    subscription_sender: Arc<Sender<SubscriptionEvent>>,
-    notification_sender: Arc<Sender<NotificationEvent>>,
+    subscription_sender: Sender<SubscriptionEvent>,
+    notification_sender: Sender<NotificationEvent>,
 }
 
 impl SubscriptionRequestHandler {
     pub(crate) fn new(
-        subscription_sender: Arc<Sender<SubscriptionEvent>>,
-        notification_sender: Arc<Sender<NotificationEvent>>,
+        subscription_sender: Sender<SubscriptionEvent>,
+        notification_sender: Sender<NotificationEvent>,
     ) -> Self {
         Self {
             subscription_sender,
@@ -54,6 +53,7 @@ impl RequestHandler for SubscriptionRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
+        // [impl->dsn~usubscription-subscribe-protobuf~1]
         let (subscription_request, source) = helpers::extract_inputs::<SubscriptionRequest>(
             RESOURCE_ID_SUBSCRIBE,
             resource_id,
@@ -146,10 +146,8 @@ mod tests {
             mpsc::channel::<NotificationEvent>(1);
 
         // create and spawn off handler, to make all the asnync goodness work
-        let request_handler = SubscriptionRequestHandler::new(
-            Arc::new(subscription_sender),
-            Arc::new(notification_sender),
-        );
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
         tokio::spawn(async move {
             let result = request_handler
                 .handle_request(
@@ -227,10 +225,8 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = SubscriptionRequestHandler::new(
-            Arc::new(subscription_sender),
-            Arc::new(notification_sender),
-        );
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
 
         let result = request_handler
             .handle_request(
@@ -260,10 +256,8 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = SubscriptionRequestHandler::new(
-            Arc::new(subscription_sender),
-            Arc::new(notification_sender),
-        );
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
 
         let result = request_handler
             .handle_request(
@@ -294,10 +288,8 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = SubscriptionRequestHandler::new(
-            Arc::new(subscription_sender),
-            Arc::new(notification_sender),
-        );
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
 
         let result = request_handler
             .handle_request(RESOURCE_ID_SUBSCRIBE, &message_attributes, None)
@@ -327,10 +319,8 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = SubscriptionRequestHandler::new(
-            Arc::new(subscription_sender),
-            Arc::new(notification_sender),
-        );
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
 
         let result = request_handler
             .handle_request(

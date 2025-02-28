@@ -45,6 +45,8 @@ mod tests {
                     test_lib::helpers::LOCAL_AUTHORITY.to_string(),
                     None,
                     None,
+                    false,
+                    None,
                 )
                 .unwrap(),
             );
@@ -76,6 +78,8 @@ mod tests {
                 USubscriptionConfiguration::create(
                     test_lib::helpers::LOCAL_AUTHORITY.to_string(),
                     None,
+                    None,
+                    false,
                     None,
                 )
                 .unwrap(),

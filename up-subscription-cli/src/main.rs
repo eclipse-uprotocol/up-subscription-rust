@@ -102,7 +102,15 @@ pub(crate) struct Args {
     #[arg(short, long, env, value_parser=between_1_and_1024)]
     notification_buffer: Option<usize>,
 
-    /// Increase verbosity of output
+    /// Enable or disable persistency, default is true (enable)
+    #[arg(short, long, env, default_value_t = true)]
+    persistency: bool,
+
+    /// Filesystem location for storing persistent data, default is current working directory
+    #[arg(long, env)]
+    storage_path: Option<String>,
+
+    /// Increase verbosity of output, default is false (reduced verbosity)
     #[arg(short, long, env, default_value_t = false)]
     verbose: bool,
 
@@ -204,5 +212,7 @@ fn config_from_args(args: &Args) -> Result<USubscriptionConfiguration, Configura
         authority.to_string(),
         args.notification_buffer,
         args.subscription_buffer,
+        args.persistency,
+        args.storage_path.clone(),
     )
 }

@@ -160,45 +160,42 @@ pub(crate) mod helpers {
     pub(crate) const REMOTE_AUTHORITY: &str = "REMOTE";
 
     const SUBSCRIBER1_ID: u32 = 0x0000_1000;
-    const SUBSCRIBER1_VERSION: u32 = 0x0000_0001;
-    const SUBSCRIBER1_RESOURCE: u32 = 0x000_1000;
+    const SUBSCRIBER1_VERSION: u8 = 0x01;
+    const SUBSCRIBER1_RESOURCE: u16 = 0x1000;
 
     const SUBSCRIBER2_ID: u32 = 0x0000_2000;
-    const SUBSCRIBER2_VERSION: u32 = 0x0000_0001;
-    const SUBSCRIBER2_RESOURCE: u32 = 0x0000_1000;
+    const SUBSCRIBER2_VERSION: u8 = 0x01;
+    const SUBSCRIBER2_RESOURCE: u16 = 0x1000;
 
     const SUBSCRIBER3_ID: u32 = 0x0000_3000;
-    const SUBSCRIBER3_VERSION: u32 = 0x0000_0001;
-    const SUBSCRIBER3_RESOURCE: u32 = 0x0000_1000;
+    const SUBSCRIBER3_VERSION: u8 = 0x01;
+    const SUBSCRIBER3_RESOURCE: u16 = 0x1000;
 
     #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     const NOTIFICATION_TOPIC_ID: u32 = 0x001_0000;
     #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
-    const NOTIFICATION_TOPIC_VERSION: u32 = 0x0000_0001;
+    const NOTIFICATION_TOPIC_VERSION: u8 = 0x01;
     #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
-    const NOTIFICATION_TOPIC_RESOURCE: u32 = 0x0000_8001;
+    const NOTIFICATION_TOPIC_RESOURCE: u16 = 0x8001;
 
     const TOPIC_LOCAL1_ID: u32 = 0x0010_0000;
-    const TOPIC_LOCAL1_VERSION: u32 = 0x0000_0001;
-    const TOPIC_LOCAL1_RESOURCE: u32 = 0x00A9_8AC7;
+    const TOPIC_LOCAL1_VERSION: u8 = 0x01;
+    const TOPIC_LOCAL1_RESOURCE: u16 = 0x8AC7;
 
     const TOPIC_LOCAL2_ID: u32 = 0x0020_0000;
-    const TOPIC_LOCAL2_VERSION: u32 = 0x0000_0001;
-    const TOPIC_LOCAL2_RESOURCE: u32 = 0x0153_158E;
+    const TOPIC_LOCAL2_VERSION: u8 = 0x01;
+    const TOPIC_LOCAL2_RESOURCE: u16 = 0x158E;
 
     const TOPIC_REMOTE1_ID: u32 = 0x0000_5000;
-    const TOPIC_REMOTE1_VERSION: u32 = 0x0000_0001;
-    const TOPIC_REMOTE1_RESOURCE: u32 = 0x2000_0000;
-
-    #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
-    pub(crate) const UENTITY_OWN_URI: &str = "/7777/1/0";
+    const TOPIC_REMOTE1_VERSION: u8 = 0x01;
+    const TOPIC_REMOTE1_RESOURCE: u16 = 0x2000;
 
     pub(crate) fn subscriber_uri1() -> UUri {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
             ue_id: SUBSCRIBER1_ID,
-            ue_version_major: SUBSCRIBER1_VERSION,
-            resource_id: SUBSCRIBER1_RESOURCE,
+            ue_version_major: SUBSCRIBER1_VERSION as u32,
+            resource_id: SUBSCRIBER1_RESOURCE as u32,
             ..Default::default()
         }
     }
@@ -207,8 +204,8 @@ pub(crate) mod helpers {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
             ue_id: SUBSCRIBER2_ID,
-            ue_version_major: SUBSCRIBER2_VERSION,
-            resource_id: SUBSCRIBER2_RESOURCE,
+            ue_version_major: SUBSCRIBER2_VERSION as u32,
+            resource_id: SUBSCRIBER2_RESOURCE as u32,
             ..Default::default()
         }
     }
@@ -217,8 +214,8 @@ pub(crate) mod helpers {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
             ue_id: SUBSCRIBER3_ID,
-            ue_version_major: SUBSCRIBER3_VERSION,
-            resource_id: SUBSCRIBER3_RESOURCE,
+            ue_version_major: SUBSCRIBER3_VERSION as u32,
+            resource_id: SUBSCRIBER3_RESOURCE as u32,
             ..Default::default()
         }
     }
@@ -244,8 +241,8 @@ pub(crate) mod helpers {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
             ue_id: NOTIFICATION_TOPIC_ID,
-            ue_version_major: NOTIFICATION_TOPIC_VERSION,
-            resource_id: NOTIFICATION_TOPIC_RESOURCE,
+            ue_version_major: NOTIFICATION_TOPIC_VERSION as u32,
+            resource_id: NOTIFICATION_TOPIC_RESOURCE as u32,
             ..Default::default()
         }
     }
@@ -254,8 +251,8 @@ pub(crate) mod helpers {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
             ue_id: TOPIC_LOCAL1_ID,
-            ue_version_major: TOPIC_LOCAL1_VERSION,
-            resource_id: TOPIC_LOCAL1_RESOURCE,
+            ue_version_major: TOPIC_LOCAL1_VERSION as u32,
+            resource_id: TOPIC_LOCAL1_RESOURCE as u32,
             ..Default::default()
         }
     }
@@ -264,8 +261,8 @@ pub(crate) mod helpers {
         UUri {
             authority_name: LOCAL_AUTHORITY.into(),
             ue_id: TOPIC_LOCAL2_ID,
-            ue_version_major: TOPIC_LOCAL2_VERSION,
-            resource_id: TOPIC_LOCAL2_RESOURCE,
+            ue_version_major: TOPIC_LOCAL2_VERSION as u32,
+            resource_id: TOPIC_LOCAL2_RESOURCE as u32,
             ..Default::default()
         }
     }
@@ -274,8 +271,8 @@ pub(crate) mod helpers {
         UUri {
             authority_name: REMOTE_AUTHORITY.into(),
             ue_id: TOPIC_REMOTE1_ID,
-            ue_version_major: TOPIC_REMOTE1_VERSION,
-            resource_id: TOPIC_REMOTE1_RESOURCE,
+            ue_version_major: TOPIC_REMOTE1_VERSION as u32,
+            resource_id: TOPIC_REMOTE1_RESOURCE as u32,
             ..Default::default()
         }
     }

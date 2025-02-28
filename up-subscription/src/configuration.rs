@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
+use std::path::{Path, PathBuf};
 use uriparse::Authority;
 
 use up_rust::{
@@ -46,6 +47,8 @@ pub struct USubscriptionConfiguration {
     pub authority_name: String,
     pub subscription_command_buffer: usize,
     pub notification_command_buffer: usize,
+    pub persistency_enabled: bool,
+    pub persistency_path: PathBuf,
 }
 
 /// Holder object for USubscription configuration options; this performs validation of configuration parameters at construction time,
@@ -58,8 +61,10 @@ impl USubscriptionConfiguration {
     /// # Arguments
     ///
     /// * `authority_name` - Authority part of UUri that this USubscription instance is reachable on
-    /// * `subscription_command_buffer` - buffer size for subscription manager commands, defaults to DEFAULT_COMMAND_BUFFER_SIZE when `None` or 0 is passed  
-    /// * `notification_command_buffer` - buffer size for notification manager commands, defaults to DEFAULT_COMMAND_BUFFER_SIZE when `None` or 0 is passed  
+    /// * `subscription_command_buffer` - buffer size for subscription manager commands, defaults to DEFAULT_COMMAND_BUFFER_SIZE when `None` or 0 is passed
+    /// * `notification_command_buffer` - buffer size for notification manager commands, defaults to DEFAULT_COMMAND_BUFFER_SIZE when `None` or 0 is passed
+    /// * `persistency_enabled` - if set to false, this USubscription instance will not persistently store subscription and notification state
+    /// * `persistency_path` - filesystem path for persistently storing subscription and notification state, defaults to current working directory if empty
     ///
     /// # Errors
     ///
@@ -68,12 +73,31 @@ impl USubscriptionConfiguration {
         authority_name: String,
         subscription_command_buffer: Option<usize>,
         notification_command_buffer: Option<usize>,
+        persistency_enabled: bool,
+        persistency_path: Option<String>,
     ) -> Result<USubscriptionConfiguration, ConfigurationError> {
         if let Err(e) = Authority::try_from(authority_name.as_bytes()) {
             return Err(ConfigurationError::new(format!(
                 "Invalid authority name: {e}"
             )));
         }
+
+        // only accept persistency path if it points to an existing directory; if None set to cwd
+        let persistency_path = if let Some(path_string) = persistency_path {
+            let p = Path::new(&path_string);
+            p.try_exists().unwrap_or_else(|_| {
+                panic!("Persistency storage path does not exist {}", path_string)
+            });
+            if !p.is_dir() {
+                panic!(
+                    "Persistency storage path is not a directory {}",
+                    path_string
+                );
+            }
+            p.to_path_buf()
+        } else {
+            std::env::current_dir().expect("Error retrieving current working directory")
+        };
 
         Ok(USubscriptionConfiguration {
             authority_name,
@@ -83,6 +107,8 @@ impl USubscriptionConfiguration {
             notification_command_buffer: notification_command_buffer
                 .unwrap_or(DEFAULT_COMMAND_BUFFER_SIZE)
                 .clamp(1, DEFAULT_COMMAND_BUFFER_SIZE),
+            persistency_enabled,
+            persistency_path,
         })
     }
 }

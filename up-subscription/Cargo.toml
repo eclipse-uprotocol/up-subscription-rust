@@ -24,10 +24,10 @@ version.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 env_logger = { workspace = true }
-futures = { workspace = true }
 log = { workspace = true }
+pickledb = { version = "0.5.1" }
 protobuf = { workspace = true }
-semver = { version = "1.0" }
+serde = { version = "1.0" }
 tokio = { workspace = true }
 up-rust = { workspace = true }
 uriparse = { version = "0.6" }

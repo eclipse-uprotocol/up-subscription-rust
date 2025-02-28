@@ -20,6 +20,15 @@ use tokio::{
     task::JoinHandle,
 };
 
+use up_rust::{
+    communication::{InMemoryRpcServer, RpcServer},
+    core::usubscription::{
+        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
+        RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
+    },
+    UCode, UStatus, UTransport, UUri,
+};
+
 use crate::{
     handlers::{
         fetch_subscribers::FetchSubscribersRequestHandler,
@@ -33,15 +42,6 @@ use crate::{
     notification_manager::{self, NotificationEvent},
     subscription_manager::{self, SubscriptionEvent},
     USubscriptionConfiguration,
-};
-
-use up_rust::{
-    communication::{InMemoryRpcServer, RpcServer},
-    core::usubscription::{
-        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
-        RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
-    },
-    UCode, UStatus, UTransport, UUri,
 };
 
 /// Whether to include 'up:' uProtocol schema prefix in URIs in log and error messages
@@ -97,7 +97,6 @@ impl USubscriptionStopper {
 /// - interaction with / orchestration of backends for managing subscriptions (`usubscription_manager.rs`) and dealing with notifications (`usubscription_notification.rs`)
 #[derive(Clone)]
 pub struct USubscriptionService {
-    _config: Arc<USubscriptionConfiguration>,
     transport: Arc<dyn UTransport>,
 }
 
@@ -129,12 +128,14 @@ impl USubscriptionService {
         });
 
         // Set up notification manager actor
+        let config_cloned = config.clone();
         let transport_cloned = transport.clone();
         let shutdown_notification_cloned = shutdown_notification.clone();
         let (notification_sender, notification_receiver) =
             mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
         let notification_joiner = helpers::spawn_and_log_error(async move {
             notification_manager::notification_engine(
+                config_cloned,
                 transport_cloned,
                 notification_receiver,
                 shutdown_notification_cloned,
@@ -143,80 +144,7 @@ impl USubscriptionService {
             Ok(())
         });
 
-        // Link up request handlers
-        let subscription_request_handler = Arc::new(SubscriptionRequestHandler::new(
-            Arc::new(subscription_sender.clone()),
-            Arc::new(notification_sender.clone()),
-        ));
-        server
-            .register_endpoint(
-                Some(&UUri::any()),
-                RESOURCE_ID_SUBSCRIBE,
-                subscription_request_handler,
-            )
-            .await
-            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-        let unsubscribe_request_handler = Arc::new(UnubscribeRequestHandler::new(
-            Arc::new(subscription_sender.clone()),
-            Arc::new(notification_sender.clone()),
-        ));
-        server
-            .register_endpoint(
-                Some(&UUri::any()),
-                RESOURCE_ID_UNSUBSCRIBE,
-                unsubscribe_request_handler,
-            )
-            .await
-            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-        let register_notification_handler = Arc::new(RegisterNotificationsRequestHandler::new(
-            Arc::new(notification_sender.clone()),
-        ));
-        server
-            .register_endpoint(
-                Some(&UUri::any()),
-                RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
-                register_notification_handler,
-            )
-            .await
-            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-        let unregister_notification_handler = Arc::new(UnregisterNotificationsRequestHandler::new(
-            Arc::new(notification_sender.clone()),
-        ));
-        server
-            .register_endpoint(
-                Some(&UUri::any()),
-                RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
-                unregister_notification_handler,
-            )
-            .await
-            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-        let fetch_subscribers_handler = Arc::new(FetchSubscribersRequestHandler::new(Arc::new(
-            subscription_sender.clone(),
-        )));
-        server
-            .register_endpoint(
-                Some(&UUri::any()),
-                RESOURCE_ID_FETCH_SUBSCRIBERS,
-                fetch_subscribers_handler,
-            )
-            .await
-            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-        let fetch_subscriptions_handler = Arc::new(FetchSubscriptionsRequestHandler::new(
-            Arc::new(subscription_sender.clone()),
-        ));
-        server
-            .register_endpoint(
-                Some(&UUri::any()),
-                RESOURCE_ID_FETCH_SUBSCRIBERS,
-                fetch_subscriptions_handler,
-            )
-            .await
-            .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+        register_handlers(server, subscription_sender, notification_sender).await?;
 
         Ok(USubscriptionStopper {
             subscription_joiner: Some(subscription_joiner),
@@ -224,4 +152,87 @@ impl USubscriptionService {
             shutdown_notification,
         })
     }
+}
+
+async fn register_handlers(
+    server: Arc<dyn RpcServer>,
+    subscription_sender: tokio::sync::mpsc::Sender<SubscriptionEvent>,
+    notification_sender: tokio::sync::mpsc::Sender<NotificationEvent>,
+) -> Result<(), UStatus> {
+    // Link up request handlers
+    let subscription_request_handler = Arc::new(SubscriptionRequestHandler::new(
+        subscription_sender.clone(),
+        notification_sender.clone(),
+    ));
+    server
+        .register_endpoint(
+            Some(&UUri::any()),
+            RESOURCE_ID_SUBSCRIBE,
+            subscription_request_handler,
+        )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+
+    let unsubscribe_request_handler = Arc::new(UnubscribeRequestHandler::new(
+        subscription_sender.clone(),
+        notification_sender.clone(),
+    ));
+    server
+        .register_endpoint(
+            Some(&UUri::any()),
+            RESOURCE_ID_UNSUBSCRIBE,
+            unsubscribe_request_handler,
+        )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+
+    let register_notification_handler = Arc::new(RegisterNotificationsRequestHandler::new(
+        notification_sender.clone(),
+    ));
+    server
+        .register_endpoint(
+            Some(&UUri::any()),
+            RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
+            register_notification_handler,
+        )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+
+    let unregister_notification_handler = Arc::new(UnregisterNotificationsRequestHandler::new(
+        notification_sender.clone(),
+    ));
+    server
+        .register_endpoint(
+            Some(&UUri::any()),
+            RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
+            unregister_notification_handler,
+        )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+
+    let fetch_subscribers_handler = Arc::new(FetchSubscribersRequestHandler::new(
+        subscription_sender.clone(),
+    ));
+    server
+        .register_endpoint(
+            Some(&UUri::any()),
+            RESOURCE_ID_FETCH_SUBSCRIBERS,
+            fetch_subscribers_handler,
+        )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+
+    let fetch_subscriptions_handler = Arc::new(FetchSubscriptionsRequestHandler::new(
+        subscription_sender.clone(),
+    ));
+    server
+        .register_endpoint(
+            Some(&UUri::any()),
+            RESOURCE_ID_FETCH_SUBSCRIBERS,
+            fetch_subscriptions_handler,
+        )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+
+    Ok(())
 }

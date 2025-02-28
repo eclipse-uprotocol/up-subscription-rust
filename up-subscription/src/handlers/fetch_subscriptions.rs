@@ -13,15 +13,7 @@
 
 use async_trait::async_trait;
 use log::*;
-use std::sync::Arc;
 use tokio::{sync::mpsc::Sender, sync::oneshot};
-
-use crate::{
-    helpers,
-    subscription_manager::{
-        RequestKind, SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
-    },
-};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
@@ -32,12 +24,19 @@ use up_rust::{
     UAttributes,
 };
 
+use crate::{
+    helpers,
+    subscription_manager::{
+        RequestKind, SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
+    },
+};
+
 pub(crate) struct FetchSubscriptionsRequestHandler {
-    subscription_sender: Arc<Sender<SubscriptionEvent>>,
+    subscription_sender: Sender<SubscriptionEvent>,
 }
 
 impl FetchSubscriptionsRequestHandler {
-    pub(crate) fn new(subscription_sender: Arc<Sender<SubscriptionEvent>>) -> Self {
+    pub(crate) fn new(subscription_sender: Sender<SubscriptionEvent>) -> Self {
         Self {
             subscription_sender,
         }
@@ -176,7 +175,7 @@ mod tests {
             mpsc::channel::<SubscriptionEvent>(1);
 
         // create and spawn off handler, to make all the asnync goodness work
-        let request_handler = FetchSubscriptionsRequestHandler::new(Arc::new(subscription_sender));
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
         tokio::spawn(async move {
             let result = request_handler
                 .handle_request(
@@ -234,7 +233,7 @@ mod tests {
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = FetchSubscriptionsRequestHandler::new(Arc::new(subscription_sender));
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(
@@ -263,7 +262,7 @@ mod tests {
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = FetchSubscriptionsRequestHandler::new(Arc::new(subscription_sender));
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(
@@ -293,7 +292,7 @@ mod tests {
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = FetchSubscriptionsRequestHandler::new(Arc::new(subscription_sender));
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(RESOURCE_ID_FETCH_SUBSCRIPTIONS, &message_attributes, None)
@@ -322,7 +321,7 @@ mod tests {
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler = FetchSubscriptionsRequestHandler::new(Arc::new(subscription_sender));
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(

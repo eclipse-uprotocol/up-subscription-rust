@@ -13,10 +13,7 @@
 
 use async_trait::async_trait;
 use log::*;
-use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
-
-use crate::{helpers, notification_manager::NotificationEvent};
 
 use up_rust::{
     communication::{RequestHandler, ServiceInvocationError, UPayload},
@@ -26,12 +23,14 @@ use up_rust::{
     UAttributes,
 };
 
+use crate::{helpers, notification_manager::NotificationEvent};
+
 pub(crate) struct UnregisterNotificationsRequestHandler {
-    notification_sender: Arc<Sender<NotificationEvent>>,
+    notification_sender: Sender<NotificationEvent>,
 }
 
 impl UnregisterNotificationsRequestHandler {
-    pub(crate) fn new(notification_sender: Arc<Sender<NotificationEvent>>) -> Self {
+    pub(crate) fn new(notification_sender: Sender<NotificationEvent>) -> Self {
         Self {
             notification_sender,
         }
@@ -100,8 +99,7 @@ mod tests {
             mpsc::channel::<NotificationEvent>(1);
 
         // create and spawn off handler, to make all the asnync goodness work
-        let request_handler =
-            UnregisterNotificationsRequestHandler::new(Arc::new(notification_sender));
+        let request_handler = UnregisterNotificationsRequestHandler::new(notification_sender);
         tokio::spawn(async move {
             let result = request_handler
                 .handle_request(
@@ -145,8 +143,7 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            UnregisterNotificationsRequestHandler::new(Arc::new(notification_sender));
+        let request_handler = UnregisterNotificationsRequestHandler::new(notification_sender);
 
         let result = request_handler
             .handle_request(
@@ -176,8 +173,7 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            UnregisterNotificationsRequestHandler::new(Arc::new(notification_sender));
+        let request_handler = UnregisterNotificationsRequestHandler::new(notification_sender);
 
         let result = request_handler
             .handle_request(
@@ -206,8 +202,7 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            UnregisterNotificationsRequestHandler::new(Arc::new(notification_sender));
+        let request_handler = UnregisterNotificationsRequestHandler::new(notification_sender);
 
         let result = request_handler
             .handle_request(
@@ -239,8 +234,7 @@ mod tests {
         let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            UnregisterNotificationsRequestHandler::new(Arc::new(notification_sender));
+        let request_handler = UnregisterNotificationsRequestHandler::new(notification_sender);
 
         let result = request_handler
             .handle_request(

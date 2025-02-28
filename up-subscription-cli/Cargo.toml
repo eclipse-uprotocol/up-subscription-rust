@@ -34,13 +34,9 @@ mqtt5 = ["dep:up-transport-mqtt5"]
 zenoh = ["dep:up-transport-zenoh", "dep:serde_json"]
 
 [dependencies]
-async-trait = { workspace = true }
 clap = { version = "4.5", features = ["derive", "env"] }
 clap-num = { version = "1.1" }
-env_logger = { workspace = true }
-futures = { workspace = true }
 log = { workspace = true }
-protobuf = { workspace = true }
 serde_json = { version = "1.0.138", optional = true }
 tokio = { workspace = true }
 up-rust = { workspace = true }
@@ -52,7 +48,3 @@ up-transport-zenoh = { version = "0.5.0", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 daemonize = { version = "0.5" }
-
-[dev-dependencies]
-mockall = { workspace = true }
-test-case = { workspace = true }
