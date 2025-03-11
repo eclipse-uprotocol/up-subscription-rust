@@ -33,8 +33,6 @@ allow = [
     "Unicode-3.0",
     "Zlib",
 ]
-exceptions = [{ name = "ring", allow = ["OpenSSL"] }]
-#private = { ignore = true }
 
 [[licenses.clarify]]
 name = "ring"
