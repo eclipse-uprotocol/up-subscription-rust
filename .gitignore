@@ -16,5 +16,5 @@ target/
 .vscode/
 .idea/
 
-# Ignose pickledb persistency files
+# Ignore pickledb persistency files
 *.store
