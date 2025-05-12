@@ -14,17 +14,15 @@
 use std::sync::Arc;
 
 use up_rust::{LocalUriProvider, UStatus, UTransport};
-use up_transport_mqtt5::{Mqtt5Transport, MqttClientOptions, TransportMode};
+use up_transport_mqtt5::{Mqtt5Transport, Mqtt5TransportOptions};
 
 pub(crate) async fn get_mqtt5_transport(
     uri_provider: Arc<dyn LocalUriProvider>,
-    mqtt5_args: MqttClientOptions,
+    mqtt5_args: Mqtt5TransportOptions,
 ) -> Result<Arc<dyn UTransport>, UStatus> {
-    Ok(Mqtt5Transport::new(
-        TransportMode::InVehicle,
-        mqtt5_args,
-        uri_provider.get_authority(),
+    Ok(
+        Mqtt5Transport::new(mqtt5_args, uri_provider.get_authority())
+            .await
+            .map(Arc::new)?,
     )
-    .await
-    .map(Arc::new)?)
 }

@@ -23,8 +23,9 @@ use tokio::{
 use up_rust::{
     communication::{InMemoryRpcServer, RpcServer},
     core::usubscription::{
-        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
-        RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
+        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_FETCH_SUBSCRIPTIONS,
+        RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_SUBSCRIBE,
+        RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
     },
     UCode, UStatus, UTransport, UUri,
 };
@@ -159,6 +160,8 @@ async fn register_handlers(
     subscription_sender: tokio::sync::mpsc::Sender<SubscriptionEvent>,
     notification_sender: tokio::sync::mpsc::Sender<NotificationEvent>,
 ) -> Result<(), UStatus> {
+    let origin_filter = UUri::any_with_resource_id(0);
+
     // Link up request handlers
     let subscription_request_handler = Arc::new(SubscriptionRequestHandler::new(
         subscription_sender.clone(),
@@ -166,7 +169,7 @@ async fn register_handlers(
     ));
     server
         .register_endpoint(
-            Some(&UUri::any()),
+            Some(&origin_filter),
             RESOURCE_ID_SUBSCRIBE,
             subscription_request_handler,
         )
@@ -179,7 +182,7 @@ async fn register_handlers(
     ));
     server
         .register_endpoint(
-            Some(&UUri::any()),
+            Some(&origin_filter),
             RESOURCE_ID_UNSUBSCRIBE,
             unsubscribe_request_handler,
         )
@@ -191,7 +194,7 @@ async fn register_handlers(
     ));
     server
         .register_endpoint(
-            Some(&UUri::any()),
+            Some(&origin_filter),
             RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
             register_notification_handler,
         )
@@ -203,7 +206,7 @@ async fn register_handlers(
     ));
     server
         .register_endpoint(
-            Some(&UUri::any()),
+            Some(&origin_filter),
             RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
             unregister_notification_handler,
         )
@@ -215,7 +218,7 @@ async fn register_handlers(
     ));
     server
         .register_endpoint(
-            Some(&UUri::any()),
+            Some(&origin_filter),
             RESOURCE_ID_FETCH_SUBSCRIBERS,
             fetch_subscribers_handler,
         )
@@ -227,8 +230,8 @@ async fn register_handlers(
     ));
     server
         .register_endpoint(
-            Some(&UUri::any()),
-            RESOURCE_ID_FETCH_SUBSCRIBERS,
+            Some(&origin_filter),
+            RESOURCE_ID_FETCH_SUBSCRIPTIONS,
             fetch_subscriptions_handler,
         )
         .await

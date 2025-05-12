@@ -36,7 +36,7 @@ mockall = { version = "0.13" }
 protobuf = { version = "3.4" }
 test-case = { version = "3.3" }
 tokio = { version = "1", features = ["full"] }
-up-rust = { version = "0.4.0", features = ["usubscription"] }
+up-rust = { version = "0.5.0", features = ["usubscription"] }
 up-subscription = { path = "./up-subscription" }
 
 # Config for 'cargo dist'

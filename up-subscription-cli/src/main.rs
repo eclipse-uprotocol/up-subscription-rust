@@ -24,7 +24,7 @@ use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscript
 use daemonize::Daemonize;
 
 #[cfg(feature = "mqtt5")]
-use up_transport_mqtt5::MqttClientOptions;
+use up_transport_mqtt5::Mqtt5TransportOptions;
 
 #[cfg(feature = "zenoh")]
 use crate::transport::zenoh::ZenohArgs;
@@ -116,7 +116,7 @@ pub(crate) struct Args {
 
     #[cfg(feature = "mqtt5")]
     #[command(flatten)]
-    mqtt_args: MqttClientOptions,
+    mqtt_args: Mqtt5TransportOptions,
 
     #[cfg(feature = "zenoh")]
     #[command(flatten)]
