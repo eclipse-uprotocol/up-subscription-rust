@@ -16,6 +16,8 @@ This codebase is approaching beta state, mirroring progress in up-spec and up-ru
 - [x] feed back learnings and clarifications into up-spec usubscription documentation
 - [ ] implement any changes necessary to align with update/re-write of uSubscription specification
 - [ ] create a little demo application for interacting with up-subscription
+- [ ] tests for subscriber persistency
+- [ ] implement subscription expiry
 
 ## Getting Started
 

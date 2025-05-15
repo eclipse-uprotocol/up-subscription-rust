@@ -14,17 +14,19 @@
 use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
 use protobuf::{Enum, Message};
 use serde::de::Error;
-#[cfg(test)]
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std::{convert::TryInto, path::PathBuf};
 
 use up_rust::{core::usubscription::State as TopicState, UUri};
 
-use crate::USubscriptionConfiguration;
+use crate::{usubscription, USubscriptionConfiguration};
 
 // Whether to include 'up:' in serialized UUris
 const PERSIST_UP_SCHEMA: bool = true;
+
+#[allow(dead_code)] // I have no idea why clippy insists on this here - this type is most definitely being used...
+pub(crate) type SubscriptionSet =
+    HashMap<UUri, HashMap<UUri, Option<usubscription::ExpiryTimestamp>>>;
 
 #[derive(Debug)]
 pub(crate) enum PersistencyError {
@@ -64,6 +66,7 @@ pub(crate) struct SubscriptionsStore {
     persistency: PickleDb,
 }
 
+// [impl->req~usubscription-subscribe-persistency~1]
 impl SubscriptionsStore {
     const SUBSCRIPTION_STORE_NAME: &str = ".subscriptions.store";
 
@@ -79,21 +82,33 @@ impl SubscriptionsStore {
 
     /// Add a new topic-subscriber relationship to persistent storage
     /// * any such relationship in this store implies a subscription state of SUBSCRIBED, except for remote topics (refer to `RemoteTopicsStore`)
+    ///
+    /// # Arguments
+    ///
+    /// * `subscriber` - UUri of the topic subscriber.
+    /// * `topic` - UUri of the topic that is being subscribed.
+    /// * `expires` - Optional subscription expiration time - in milliseconds since Unix epoch (1970-01-01)
+    ///
+    /// # Returns
+    ///
     /// * returns `Ok(true)` if this is the first subscription to this topic, `Ok(false)` otherwise
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
     pub(crate) fn add_subscription(
         &mut self,
         subscriber: &UUri,
         topic: &UUri,
+        expiry: Option<usubscription::ExpiryTimestamp>,
     ) -> Result<bool, PersistencyError> {
         // serialize inputs to types used in persistency
         let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
         let subscriber_string = &subscriber.to_uri(PERSIST_UP_SCHEMA);
 
         Ok(
-            if let Some(mut subscriber_list) = self.persistency.get::<HashSet<String>>(topic_string)
+            if let Some(mut subscriber_list) = self
+                .persistency
+                .get::<HashMap<String, Option<usubscription::ExpiryTimestamp>>>(topic_string)
             {
-                subscriber_list.insert(subscriber_string.clone());
+                subscriber_list.insert(subscriber_string.clone(), expiry);
                 self.persistency
                     .set(topic_string, &subscriber_list)
                     .map_err(|e| {
@@ -104,7 +119,10 @@ impl SubscriptionsStore {
                 false
             } else {
                 self.persistency
-                    .set(topic_string, &HashSet::from([subscriber_string.clone()]))
+                    .set(
+                        topic_string,
+                        &HashMap::from([(subscriber_string.clone(), expiry)]),
+                    )
                     .map_err(|e| {
                         PersistencyError::internal_error(format!(
                             "Error adding new topic-subscriber {e}"
@@ -127,7 +145,10 @@ impl SubscriptionsStore {
         let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
         let subscriber_string = &subscriber.to_uri(PERSIST_UP_SCHEMA);
 
-        if let Some(mut subscriber_list) = self.persistency.get::<HashSet<String>>(topic_string) {
+        if let Some(mut subscriber_list) = self
+            .persistency
+            .get::<HashMap<String, Option<u32>>>(topic_string)
+        {
             subscriber_list.remove(subscriber_string);
 
             if subscriber_list.is_empty() {
@@ -162,9 +183,12 @@ impl SubscriptionsStore {
 
         // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
         // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
-        if let Some(list) = self.persistency.get::<HashSet<String>>(topic_string) {
-            for entry in list {
-                subscribers.push(UUri::try_from(entry).map_err(|e| {
+        if let Some(list) = self
+            .persistency
+            .get::<HashMap<String, Option<u32>>>(topic_string)
+        {
+            for entry in list.keys() {
+                subscribers.push(UUri::try_from(entry.clone()).map_err(|e| {
                     PersistencyError::serialization_error(format!(
                         "Error deserializing subscriber uri {e}"
                     ))
@@ -186,8 +210,8 @@ impl SubscriptionsStore {
         let mut result_subs: Vec<UUri> = Vec::new();
 
         for entry in self.persistency.iter() {
-            if let Some(subscribers) = entry.get_value::<HashSet<String>>() {
-                if subscribers.contains(subscriber_string) {
+            if let Some(subscribers) = entry.get_value::<HashMap<String, Option<u32>>>() {
+                if subscribers.contains_key(subscriber_string) {
                     result_subs.push(UUri::try_from(entry.get_key()).map_err(|e| {
                         PersistencyError::serialization_error(format!(
                             "Error deserializing topic uri {e}"
@@ -201,23 +225,26 @@ impl SubscriptionsStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn get_data(
-        &self,
-    ) -> Result<HashMap<UUri, HashSet<UUri>>, Box<dyn std::error::Error>> {
+    pub(crate) fn get_data(&self) -> Result<SubscriptionSet, Box<dyn std::error::Error>> {
         #[allow(clippy::mutable_key_type)]
-        let mut map: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut map: SubscriptionSet = HashMap::new();
 
         for entry in self.persistency.iter() {
             #[allow(clippy::mutable_key_type)]
-            let mut topic_subscribers = HashSet::new();
+            let mut topic_subscribers = HashMap::new();
 
-            if let Some(list) = entry.get_value::<HashSet<String>>() {
-                for entry in list {
-                    topic_subscribers.insert(UUri::try_from(entry).map_err(|e| {
-                        PersistencyError::serialization_error(format!(
-                            "Error deserializing subscriber uri {e}"
-                        ))
-                    })?);
+            if let Some(list) =
+                entry.get_value::<HashMap<String, Option<usubscription::ExpiryTimestamp>>>()
+            {
+                for (subscriber, expiry) in list {
+                    topic_subscribers.insert(
+                        UUri::try_from(subscriber).map_err(|e| {
+                            PersistencyError::serialization_error(format!(
+                                "Error deserializing subscriber uri {e}"
+                            ))
+                        })?,
+                        expiry,
+                    );
                 }
             }
 
@@ -237,7 +264,7 @@ impl SubscriptionsStore {
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn set_data(
         &mut self,
-        map: HashMap<UUri, HashSet<UUri>>,
+        map: SubscriptionSet,
     ) -> Result<(), Box<dyn std::error::Error>> {
         for (topic, subscribers) in map {
             self.persistency
@@ -245,8 +272,8 @@ impl SubscriptionsStore {
                     &topic.to_uri(PERSIST_UP_SCHEMA),
                     &subscribers
                         .iter()
-                        .map(|u| u.to_uri(PERSIST_UP_SCHEMA))
-                        .collect::<HashSet<String>>(),
+                        .map(|(u, e)| (u.to_uri(PERSIST_UP_SCHEMA), *e))
+                        .collect::<HashMap<String, Option<usubscription::ExpiryTimestamp>>>(),
                 )
                 .map_err(|e| {
                     PersistencyError::serialization_error(format!(

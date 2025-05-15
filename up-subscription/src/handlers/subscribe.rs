@@ -13,6 +13,7 @@
 
 use async_trait::async_trait;
 use log::*;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{sync::mpsc::Sender, sync::oneshot};
 
 use up_rust::{
@@ -24,7 +25,7 @@ use up_rust::{
 };
 
 use crate::{
-    helpers,
+    helpers, usubscription,
     {notification_manager::NotificationEvent, subscription_manager::SubscriptionEvent},
 };
 
@@ -66,11 +67,32 @@ impl RequestHandler for SubscriptionRequestHandler {
             ));
         };
 
+        // Provisionally compute milliseconds to subscription expiry, from protobuf.google.Timestamp input in second granularity (we ignore the nanos).
+        // Likely to change in the future, when we get rid of the protobuf.google.Timestamp type and track in milliseconds throughought.
+        let expiry: Option<usubscription::ExpiryTimestamp> =
+            match subscription_request.attributes.expire.seconds.try_into() {
+                Ok(0) => None,
+                Ok(seconds) => Some(seconds * 1000),
+                Err(_) => None,
+            };
+        // Check if the expiry timestamp is in the future
+        if let Some(expiry_ms) = expiry {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("Time went backwards")
+                .as_millis();
+            if now_ms > expiry_ms {
+                return Err(ServiceInvocationError::InvalidArgument(
+                    "Subscription Expiry time already passed".to_string(),
+                ));
+            }
+        }
         // Interact with subscription manager backend
         let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
         let se = SubscriptionEvent::AddSubscription {
             subscriber: source.clone(),
             topic: topic.clone(),
+            expiry,
             respond_to,
         };
 
@@ -133,7 +155,7 @@ mod tests {
 
         // create request and other required object(s)
         let subscribe_request =
-            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri());
+            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri(), None);
         let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
         let message_attributes = UAttributes {
             source: Some(test_lib::helpers::subscriber_uri1()).into(),
@@ -172,6 +194,7 @@ mod tests {
             SubscriptionEvent::AddSubscription {
                 subscriber,
                 topic,
+                expiry: None,
                 respond_to,
             } => {
                 assert_eq!(subscriber, test_lib::helpers::subscriber_uri1());
@@ -214,7 +237,7 @@ mod tests {
 
         // create request and other required object(s)
         let subscribe_request =
-            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri());
+            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri(), None);
         let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
         let message_attributes = UAttributes {
             source: Some(test_lib::helpers::subscriber_uri1()).into(),
@@ -249,7 +272,7 @@ mod tests {
 
         // create request and other required object(s)
         let subscribe_request =
-            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri());
+            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri(), None);
         let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
@@ -335,5 +358,112 @@ mod tests {
             ServiceInvocationError::InvalidArgument(_) => {}
             _ => panic!("Wrong error type"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_future_subscription() {
+        helpers::init_once();
+
+        let future_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 600;
+
+        // create request and other required object(s)
+        // SubscriptionRequest currently uses protobuf.google.Timestamp for expiry attribute, which tracks timestamp in second granularity (we ignore the nanos)
+        // Also, protobuf can only do signed ints, and uses an i64 for the seconds... so we have to force our timestamp into that.
+        let subscribe_request = test_lib::helpers::subscription_request(
+            test_lib::helpers::local_topic1_uri(),
+            Some(u32::try_from(future_secs).unwrap()),
+        );
+        let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+
+        let (subscription_sender, mut subscription_receiver) =
+            mpsc::channel::<SubscriptionEvent>(1);
+        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
+
+        // create and spawn off handler, to make all the asnync goodness work
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        tokio::spawn(async move {
+            let result = request_handler
+                .handle_request(
+                    RESOURCE_ID_SUBSCRIBE,
+                    &message_attributes,
+                    Some(request_payload),
+                )
+                .await
+                .unwrap();
+
+            let response: SubscriptionResponse = result.unwrap().extract_protobuf().unwrap();
+            assert_eq!(
+                response.topic.unwrap_or_default(),
+                test_lib::helpers::local_topic1_uri()
+            );
+            assert_eq!(response.status.unwrap().state, State::SUBSCRIBED.into());
+        });
+
+        // validate subscription manager interaction
+        let subscription_event = subscription_receiver.recv().await.unwrap();
+        match subscription_event {
+            SubscriptionEvent::AddSubscription {
+                subscriber,
+                topic,
+                expiry,
+                respond_to,
+            } => {
+                assert_eq!(subscriber, test_lib::helpers::subscriber_uri1());
+                assert_eq!(topic, test_lib::helpers::local_topic1_uri());
+                // we're passing in seconds above, because of how SubscriptionRequest is defined - but internally we are handling milliseconds; therefore *1000
+                assert_eq!(
+                    expiry,
+                    Some((future_secs as usubscription::ExpiryTimestamp) * 1000)
+                );
+
+                let _ = respond_to.send(SubscriptionStatus {
+                    state: State::SUBSCRIBED.into(),
+                    ..Default::default()
+                });
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_expired_subscription() {
+        helpers::init_once();
+
+        // create request and other required object(s)
+        let subscribe_request = test_lib::helpers::subscription_request(
+            test_lib::helpers::local_topic1_uri(),
+            Some(10),
+        );
+        let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+
+        let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
+        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
+
+        // create handler and perform tested operation
+        let request_handler =
+            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+
+        let result = request_handler
+            .handle_request(
+                up_rust::core::usubscription::RESOURCE_ID_SUBSCRIBE,
+                &message_attributes,
+                Some(request_payload),
+            )
+            .await;
+
+        assert!(result.is_err_and(|e| matches!(e, ServiceInvocationError::InvalidArgument(_))));
     }
 }

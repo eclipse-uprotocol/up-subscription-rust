@@ -51,6 +51,9 @@ pub const INCLUDE_SCHEMA: bool = false;
 // Remote-subscribe operation ttl; 5 minutes in milliseconds, as per https://github.com/eclipse-uprotocol/up-spec/tree/main/up-l3/usubscription/v3#6-timeout--retry-logic
 pub(crate) const UP_REMOTE_TTL: u32 = 300000;
 
+// Centralized definition, make it easier to accomodate potential changes to expiry type in up-spec
+pub(crate) type ExpiryTimestamp = u128;
+
 /// This trait primarily serves to provide a hook-point for using the mockall crate, for mocking USubscriptionService objects
 /// where we also need/want to inject custom/mock UTransport implementations that subsequently get used in test cases.
 pub trait UTransportHolder {

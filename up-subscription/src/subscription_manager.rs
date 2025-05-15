@@ -13,7 +13,7 @@
 
 use log::*;
 #[cfg(test)]
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc, mpsc::Receiver, oneshot, Notify};
 use up_rust::{LocalUriProvider, UTransport};
@@ -28,7 +28,7 @@ use up_rust::{
     UCode, UPriority, UStatus, UUri,
 };
 
-use crate::{helpers, persistency, usubscription::UP_REMOTE_TTL, USubscriptionConfiguration};
+use crate::{helpers, persistency, usubscription, USubscriptionConfiguration};
 
 // This is the core business logic for handling and tracking subscriptions. It is currently implemented as a single event-consuming
 // function `handle_message()`, which is supposed to be spawned into a task and process the various `Events` that it can receive
@@ -62,6 +62,7 @@ pub(crate) enum SubscriptionEvent {
     AddSubscription {
         subscriber: UUri,
         topic: UUri,
+        expiry: Option<usubscription::ExpiryTimestamp>,
         respond_to: oneshot::Sender<SubscriptionStatus>,
     },
     RemoveSubscription {
@@ -82,12 +83,12 @@ pub(crate) enum SubscriptionEvent {
     // Purely for use during testing: get copy of current topic-subscriper ledger
     #[cfg(test)]
     GetTopicSubscribers {
-        respond_to: oneshot::Sender<HashMap<UUri, HashSet<UUri>>>,
+        respond_to: oneshot::Sender<persistency::SubscriptionSet>,
     },
     // Purely for use during testing: force-set new topic-subscriber ledger
     #[cfg(test)]
     SetTopicSubscribers {
-        topic_subscribers_replacement: HashMap<UUri, HashSet<UUri>>,
+        topic_subscribers_replacement: persistency::SubscriptionSet,
         respond_to: oneshot::Sender<()>,
     },
     // Purely for use during testing: get copy of current topic-subscriper ledger
@@ -125,6 +126,7 @@ pub(crate) async fn handle_message(
     helpers::init_once();
 
     // track subscribers for topics - if you're in this list, you have SUBSCRIBED, otherwise you're considered UNSUBSCRIBED
+    // [impl->req~usubscription-subscribe-persistency~1]
     let mut subscriptions = persistency::SubscriptionsStore::new(&configuration);
 
     // for remote topics, we need to additionally deal with _PENDING states, this tracks states of these topics
@@ -159,6 +161,7 @@ pub(crate) async fn handle_message(
                 SubscriptionEvent::AddSubscription {
                     subscriber,
                     topic,
+                    expiry,
                     respond_to,
                 } => {
                     match add_subscription(
@@ -169,6 +172,7 @@ pub(crate) async fn handle_message(
                         &mut remote_topics,
                         subscriber,
                         topic,
+                        expiry,
                     ) {
                         Ok(result) => {
                             if respond_to.send(result).is_err() {
@@ -297,6 +301,7 @@ pub(crate) async fn handle_message(
 }
 
 // Add a subscription relationship to bookkeeping, initiate remote subscribe request if neccessary
+#[allow(clippy::too_many_arguments)]
 fn add_subscription(
     uri_provider: Arc<dyn LocalUriProvider>,
     transport: Arc<dyn UTransport>,
@@ -305,8 +310,9 @@ fn add_subscription(
     remote_topics: &mut persistency::RemoteTopicsStore,
     subscriber: UUri,
     topic: UUri,
+    expiry: Option<usubscription::ExpiryTimestamp>,
 ) -> Result<SubscriptionStatus, persistency::PersistencyError> {
-    let _ = topic_subscribers.add_subscription(&subscriber, &topic)?;
+    let _ = topic_subscribers.add_subscription(&subscriber, &topic, expiry)?;
 
     // for remote_topics, we explicitly track state due to _PENDING scenarios
     let state = if topic.is_remote_authority(&uri_provider.get_authority()) {
@@ -466,7 +472,12 @@ async fn remote_subscribe(
     let subscription_response: SubscriptionResponse = rpc_client
         .invoke_proto_method(
             make_remote_subscribe_uuri(&subscription_request.topic),
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4)),
+            CallOptions::for_rpc_request(
+                usubscription::UP_REMOTE_TTL,
+                None,
+                None,
+                Some(UPriority::UPRIORITY_CS4),
+            ),
             subscription_request,
         )
         .await
@@ -515,7 +526,12 @@ async fn remote_unsubscribe(
     let unsubscribe_response: UStatus = rpc_client
         .invoke_proto_method(
             make_remote_unsubscribe_uuri(&unsubscribe_request.topic),
-            CallOptions::for_rpc_request(UP_REMOTE_TTL, None, None, Some(UPriority::UPRIORITY_CS4)),
+            CallOptions::for_rpc_request(
+                usubscription::UP_REMOTE_TTL,
+                None,
+                None,
+                Some(UPriority::UPRIORITY_CS4),
+            ),
             unsubscribe_request,
         )
         .await

@@ -173,7 +173,7 @@ mod tests {
 
         // create request and other required object(s)
         let subscribe_request =
-            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri());
+            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri(), None);
         let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
         let message_attributes = UAttributes {
             source: Some(test_lib::helpers::subscriber_uri1()).into(),
@@ -205,7 +205,7 @@ mod tests {
 
         // create request and other required object(s)
         let subscribe_request =
-            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri());
+            test_lib::helpers::subscription_request(test_lib::helpers::local_topic1_uri(), None);
         let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);

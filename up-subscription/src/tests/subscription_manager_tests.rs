@@ -14,7 +14,7 @@
 #[cfg(test)]
 mod tests {
     use protobuf::MessageFull;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
     use std::error::Error;
     use std::sync::Arc;
     use test_case::test_case;
@@ -31,7 +31,7 @@ mod tests {
         handle_message, RequestKind, SubscribersResponse, SubscriptionEntry, SubscriptionEvent,
         SubscriptionsResponse,
     };
-    use crate::{helpers, test_lib, USubscriptionConfiguration};
+    use crate::{helpers, persistency, test_lib, usubscription, USubscriptionConfiguration};
 
     // Simple subscription-manager-actor front-end to use for testing
     struct CommandSender {
@@ -114,11 +114,13 @@ mod tests {
             &self,
             topic: UUri,
             subscriber: UUri,
+            expiry: Option<usubscription::ExpiryTimestamp>,
         ) -> Result<SubscriptionStatus, Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
             let command = SubscriptionEvent::AddSubscription {
                 subscriber,
                 topic,
+                expiry,
                 respond_to,
             };
             self.command_sender.send(command).await?;
@@ -172,8 +174,8 @@ mod tests {
 
         async fn get_topic_subscribers(
             &self,
-        ) -> Result<HashMap<UUri, HashSet<UUri>>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<HashMap<UUri, HashSet<UUri>>>();
+        ) -> Result<persistency::SubscriptionSet, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<persistency::SubscriptionSet>();
             let command = SubscriptionEvent::GetTopicSubscribers { respond_to };
 
             self.command_sender.send(command).await?;
@@ -183,7 +185,7 @@ mod tests {
         #[allow(clippy::mutable_key_type)]
         async fn set_topic_subscribers(
             &self,
-            topic_subscribers_replacement: HashMap<UUri, HashSet<UUri>>,
+            topic_subscribers_replacement: persistency::SubscriptionSet,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             let command = SubscriptionEvent::SetTopicSubscribers {
@@ -239,15 +241,50 @@ mod tests {
 
         // Prepare things
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         for (topic, subscriber) in topic_subscribers {
             desired_state
                 .entry(topic.clone())
                 .or_default()
-                .insert(subscriber.clone());
+                .insert(subscriber.clone(), None);
 
             // Operation to test
-            let result = command_sender.subscribe(topic, subscriber).await;
+            let result = command_sender.subscribe(topic, subscriber, None).await;
+            assert!(result.is_ok());
+
+            // Verify operation result content
+            assert_eq!(result.unwrap().state.unwrap(), State::SUBSCRIBED);
+        }
+
+        // Verify iternal bookeeping
+        let topic_subscribers = command_sender.get_topic_subscribers().await;
+        assert!(topic_subscribers.is_ok());
+        #[allow(clippy::mutable_key_type)]
+        let topic_subscribers = topic_subscribers.unwrap();
+        assert_eq!(topic_subscribers.len(), desired_state.len());
+        assert_eq!(topic_subscribers, desired_state);
+    }
+
+    #[test_case(vec![(UUri::default(), UUri::default(), None)]; "Default susbcriber-topic-no_expiry")]
+    #[test_case(vec![(UUri::default(), UUri::default(), Some(1000))]; "Default susbcriber-topic-some_expiry")]
+    #[tokio::test]
+    async fn test_subscribe_with_expiry(
+        topic_subscribers: Vec<(UUri, UUri, Option<usubscription::ExpiryTimestamp>)>,
+    ) {
+        helpers::init_once();
+        let command_sender = CommandSender::new();
+
+        // Prepare things
+        #[allow(clippy::mutable_key_type)]
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
+        for (topic, subscriber, expiry) in topic_subscribers {
+            desired_state
+                .entry(topic.clone())
+                .or_default()
+                .insert(subscriber.clone(), expiry);
+
+            // Operation to test
+            let result = command_sender.subscribe(topic, subscriber, expiry).await;
             assert!(result.is_ok());
 
             // Verify operation result content
@@ -291,7 +328,11 @@ mod tests {
 
         // Operation to test
         let result = command_sender
-            .subscribe(remote_topic.clone(), test_lib::helpers::subscriber_uri1())
+            .subscribe(
+                remote_topic.clone(),
+                test_lib::helpers::subscriber_uri1(),
+                None,
+            )
             .await;
         assert!(result.is_ok());
 
@@ -351,12 +392,20 @@ mod tests {
 
         // Operation to test
         let result = command_sender
-            .subscribe(remote_topic.clone(), test_lib::helpers::subscriber_uri1())
+            .subscribe(
+                remote_topic.clone(),
+                test_lib::helpers::subscriber_uri1(),
+                None,
+            )
             .await;
         assert!(result.is_ok());
 
         let result = command_sender
-            .subscribe(remote_topic.clone(), test_lib::helpers::subscriber_uri2())
+            .subscribe(
+                remote_topic.clone(),
+                test_lib::helpers::subscriber_uri2(),
+                None,
+            )
             .await;
         assert!(result.is_ok());
 
@@ -385,12 +434,12 @@ mod tests {
 
         // Prepare things
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic1_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
 
         command_sender
             .set_topic_subscribers(desired_state)
@@ -426,13 +475,13 @@ mod tests {
 
         // Prepare things
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic1_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri2());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri2(), None);
 
         command_sender
             .set_topic_subscribers(desired_state)
@@ -468,7 +517,7 @@ mod tests {
         assert!(topic_subscribers
             .get(&test_lib::helpers::local_topic1_uri())
             .unwrap()
-            .contains(&test_lib::helpers::subscriber_uri2()));
+            .contains_key(&test_lib::helpers::subscriber_uri2()));
     }
 
     // All subscribers for a remote topic unsubscribe
@@ -494,10 +543,10 @@ mod tests {
 
         // set starting state
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state.entry(remote_topic.clone()).or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
 
         command_sender
             .set_topic_subscribers(desired_state)
@@ -560,11 +609,11 @@ mod tests {
 
         // set starting state
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state.entry(remote_topic.clone()).or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri2());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri2(), None);
 
         command_sender
             .set_topic_subscribers(desired_state)
@@ -626,20 +675,20 @@ mod tests {
 
         // set starting state
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic1_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri2());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri2(), None);
 
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic2_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri3());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri3(), None);
 
         command_sender
             .set_topic_subscribers(desired_state.clone())
@@ -665,7 +714,7 @@ mod tests {
         for subscriber in fetch_subscribers_response {
             #[allow(clippy::mutable_key_type)]
             let expected_subscribers = desired_state.get(&desired_topic).unwrap();
-            assert!(expected_subscribers.contains(&subscriber));
+            assert!(expected_subscribers.contains_key(&subscriber));
         }
     }
 
@@ -680,20 +729,20 @@ mod tests {
 
         // set starting state
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic1_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri2());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri2(), None);
 
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic2_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri3());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri3(), None);
 
         command_sender
             .set_topic_subscribers(desired_state.clone())
@@ -705,14 +754,11 @@ mod tests {
 
         let mut expected_subscribers: Vec<(UUri, UUri)> = Vec::new();
         for (topic, subscribers) in desired_state.clone() {
-            if subscribers.contains(&desired_subscriber) {
-                expected_subscribers.push((
-                    subscribers
-                        .get(&desired_subscriber)
-                        .unwrap_or_default()
-                        .clone(),
-                    topic,
-                ));
+            if subscribers.contains_key(&desired_subscriber) {
+                if let Some((subscriber, _expiry)) = subscribers.get_key_value(&desired_subscriber)
+                {
+                    expected_subscribers.push((subscriber.clone(), topic));
+                }
             }
         }
 
@@ -747,20 +793,20 @@ mod tests {
 
         // set starting state
         #[allow(clippy::mutable_key_type)]
-        let mut desired_state: HashMap<UUri, HashSet<UUri>> = HashMap::new();
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic1_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri2());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri2(), None);
 
         #[allow(clippy::mutable_key_type)]
         let entry = desired_state
             .entry(test_lib::helpers::local_topic2_uri())
             .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1());
-        entry.insert(test_lib::helpers::subscriber_uri3());
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        entry.insert(test_lib::helpers::subscriber_uri3(), None);
 
         command_sender
             .set_topic_subscribers(desired_state.clone())
@@ -794,7 +840,7 @@ mod tests {
         } in fetch_subscriptions_response
         {
             assert_eq!(topic, desired_topic);
-            assert!(expected_subscribers.contains(&subscriber));
+            assert!(expected_subscribers.contains_key(&subscriber));
         }
     }
 }

@@ -150,9 +150,10 @@ pub(crate) mod mocks {
 // Various methods for constructing helper objects to be used in tests
 #[cfg(test)]
 pub(crate) mod helpers {
+    use protobuf::well_known_types::timestamp::Timestamp;
     use up_rust::core::usubscription::{
-        SubscriberInfo, SubscriptionRequest, UnsubscribeRequest, USUBSCRIPTION_TYPE_ID,
-        USUBSCRIPTION_VERSION_MAJOR,
+        SubscribeAttributes, SubscriberInfo, SubscriptionRequest, UnsubscribeRequest,
+        USUBSCRIPTION_TYPE_ID, USUBSCRIPTION_VERSION_MAJOR,
     };
     use up_rust::UUri;
 
@@ -277,9 +278,22 @@ pub(crate) mod helpers {
         }
     }
 
-    pub(crate) fn subscription_request(topic: UUri) -> SubscriptionRequest {
+    pub(crate) fn subscription_request(
+        topic: UUri,
+        expire_seconds: Option<u32>,
+    ) -> SubscriptionRequest {
+        let attributes = expire_seconds.map(|expire| SubscribeAttributes {
+            expire: Some(Timestamp {
+                seconds: expire.into(),
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        });
+
         SubscriptionRequest {
             topic: Some(topic).into(),
+            attributes: attributes.into(),
             ..Default::default()
         }
     }
