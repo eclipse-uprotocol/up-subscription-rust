@@ -24,24 +24,16 @@ use up_rust::{
     UAttributes,
 };
 
-use crate::{
-    helpers, usubscription,
-    {notification_manager::NotificationEvent, subscription_manager::SubscriptionEvent},
-};
+use crate::{helpers, subscription_manager::SubscriptionEvent, usubscription};
 
 pub(crate) struct SubscriptionRequestHandler {
     subscription_sender: Sender<SubscriptionEvent>,
-    notification_sender: Sender<NotificationEvent>,
 }
 
 impl SubscriptionRequestHandler {
-    pub(crate) fn new(
-        subscription_sender: Sender<SubscriptionEvent>,
-        notification_sender: Sender<NotificationEvent>,
-    ) -> Self {
+    pub(crate) fn new(subscription_sender: Sender<SubscriptionEvent>) -> Self {
         Self {
             subscription_sender,
-            notification_sender,
         }
     }
 }
@@ -108,25 +100,6 @@ impl RequestHandler for SubscriptionRequestHandler {
             ));
         };
 
-        // Notify update channel
-        let (respond_to, receive_from) = oneshot::channel::<()>();
-        if let Err(e) = self
-            .notification_sender
-            .send(NotificationEvent::StateChange {
-                subscriber: source.clone(),
-                topic: subscription_request.topic.clone().unwrap_or_default(),
-                status: status.clone(),
-                respond_to,
-            })
-            .await
-        {
-            error!("Error initiating subscription-change update notification: {e}");
-        }
-        if let Err(e) = receive_from.await {
-            // Not returning an error here, as update notification is not a core concern wrt the actual subscription management
-            warn!("Error sending subscription-change update notification: {e}");
-        };
-
         // Build and return result
         let response = SubscriptionResponse {
             topic: Some(subscription_request.topic.unwrap_or_default()).into(),
@@ -164,12 +137,9 @@ mod tests {
 
         let (subscription_sender, mut subscription_receiver) =
             mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, mut notification_receiver) =
-            mpsc::channel::<NotificationEvent>(1);
 
         // create and spawn off handler, to make all the asnync goodness work
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
         tokio::spawn(async move {
             let result = request_handler
                 .handle_request(
@@ -207,28 +177,6 @@ mod tests {
             }
             _ => panic!("Wrong event type"),
         }
-
-        // validate notification manager interaction
-        let notification_event = notification_receiver.recv().await.unwrap();
-        match notification_event {
-            NotificationEvent::StateChange {
-                subscriber,
-                topic,
-                status,
-                respond_to: _,
-            } => {
-                assert_eq!(subscriber, test_lib::helpers::subscriber_uri1());
-                assert_eq!(topic, test_lib::helpers::local_topic1_uri());
-                assert_eq!(
-                    status,
-                    SubscriptionStatus {
-                        state: State::SUBSCRIBED.into(),
-                        ..Default::default()
-                    }
-                );
-            }
-            _ => panic!("Wrong event type"),
-        }
     }
 
     #[tokio::test]
@@ -245,11 +193,9 @@ mod tests {
         };
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(
@@ -276,11 +222,9 @@ mod tests {
         let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(
@@ -308,11 +252,9 @@ mod tests {
         };
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(RESOURCE_ID_SUBSCRIBE, &message_attributes, None)
@@ -339,11 +281,9 @@ mod tests {
         };
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(
@@ -385,11 +325,9 @@ mod tests {
 
         let (subscription_sender, mut subscription_receiver) =
             mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create and spawn off handler, to make all the asnync goodness work
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
         tokio::spawn(async move {
             let result = request_handler
                 .handle_request(
@@ -450,11 +388,9 @@ mod tests {
         };
 
         let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
-        let (notification_sender, _) = mpsc::channel::<NotificationEvent>(1);
 
         // create handler and perform tested operation
-        let request_handler =
-            SubscriptionRequestHandler::new(subscription_sender, notification_sender);
+        let request_handler = SubscriptionRequestHandler::new(subscription_sender);
 
         let result = request_handler
             .handle_request(

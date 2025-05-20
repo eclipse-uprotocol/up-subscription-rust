@@ -15,7 +15,7 @@ use log::*;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc::Receiver, oneshot, Notify};
+use tokio::sync::{mpsc::Receiver, mpsc::Sender, oneshot, Notify};
 
 use up_rust::{
     core::usubscription::{
@@ -42,7 +42,7 @@ pub(crate) enum NotificationEvent {
         subscriber: UUri,
     },
     StateChange {
-        subscriber: UUri,
+        subscriber: Option<UUri>,
         topic: UUri,
         status: SubscriptionStatus,
         respond_to: oneshot::Sender<()>,
@@ -117,7 +117,7 @@ pub(crate) async fn notification_engine(
                 let update = Update {
                     topic: Some(topic).into(),
                     subscriber: Some(SubscriberInfo {
-                        uri: Some(subscriber.clone()).into(),
+                        uri: subscriber.into(),
                         ..Default::default()
                     })
                     .into(),
@@ -200,4 +200,30 @@ pub(crate) async fn notification_engine(
             }
         }
     }
+}
+
+// Convenience wrapper for sending state change notification messages
+// susbcriber is an Option, because in the case ob remote subscription state changes, there is no subscriber (other than local usubscription service)
+pub(crate) async fn notify(
+    notification_sender: Sender<NotificationEvent>,
+    subscriber: Option<UUri>,
+    topic: UUri,
+    status: SubscriptionStatus,
+) {
+    let (respond_to, receive_from) = oneshot::channel::<()>();
+    if let Err(e) = notification_sender
+        .send(NotificationEvent::StateChange {
+            subscriber,
+            topic,
+            status,
+            respond_to,
+        })
+        .await
+    {
+        error!("Error initiating subscription-change update notification: {e}");
+    }
+    if let Err(e) = receive_from.await {
+        // Not returning an error here, as update notification is not a core concern wrt the actual subscription management
+        warn!("Error sending subscription-change update notification: {e}");
+    };
 }

@@ -15,7 +15,9 @@ use log::*;
 #[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{mpsc, mpsc::Receiver, oneshot, Notify};
+#[cfg(test)]
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::{mpsc, mpsc::Receiver, mpsc::Sender, oneshot, Notify};
 use up_rust::{LocalUriProvider, UTransport};
 
 use up_rust::{
@@ -28,7 +30,10 @@ use up_rust::{
     UCode, UPriority, UStatus, UUri,
 };
 
-use crate::{helpers, persistency, usubscription, USubscriptionConfiguration};
+use crate::{
+    helpers, notification_manager, notification_manager::NotificationEvent, persistency,
+    usubscription, USubscriptionConfiguration,
+};
 
 // This is the core business logic for handling and tracking subscriptions. It is currently implemented as a single event-consuming
 // function `handle_message()`, which is supposed to be spawned into a task and process the various `Events` that it can receive
@@ -102,10 +107,16 @@ pub(crate) enum SubscriptionEvent {
         topic_subscribers_replacement: HashMap<UUri, TopicState>,
         respond_to: oneshot::Sender<()>,
     },
+    // Purely for use during testing: get internal remote-subscription-change command sender
+    #[cfg(test)]
+    GetRemoteSubscriptionChangeSender {
+        respond_to: oneshot::Sender<UnboundedSender<RemoteSubscriptionEvent>>,
+    },
 }
 
 // Internal subscription manager API - used to update on remote subscriptions (deal with _PENDING states)
-enum RemoteSubscriptionEvent {
+#[derive(Debug)]
+pub(crate) enum RemoteSubscriptionEvent {
     RemoteTopicStateUpdate { topic: UUri, state: TopicState },
 }
 
@@ -121,6 +132,7 @@ pub(crate) async fn handle_message(
     configuration: Arc<USubscriptionConfiguration>,
     transport: Arc<dyn UTransport>,
     mut command_receiver: Receiver<SubscriptionEvent>,
+    notification_sender: Sender<NotificationEvent>,
     shutdown: Arc<Notify>,
 ) {
     helpers::init_once();
@@ -170,11 +182,20 @@ pub(crate) async fn handle_message(
                         remote_sub_sender.clone(),
                         &mut subscriptions,
                         &mut remote_topics,
-                        subscriber,
-                        topic,
+                        subscriber.clone(),
+                        topic.clone(),
                         expiry,
                     ) {
                         Ok(result) => {
+                            // Send topic state change notification
+                            notification_manager::notify(
+                                notification_sender.clone(),
+                                Some(subscriber),
+                                topic,
+                                result.clone(),
+                            )
+                            .await;
+
                             if respond_to.send(result).is_err() {
                                 error!("Problem with internal communication");
                             }
@@ -195,10 +216,19 @@ pub(crate) async fn handle_message(
                         remote_sub_sender.clone(),
                         &mut subscriptions,
                         &mut remote_topics,
-                        subscriber,
-                        topic,
+                        subscriber.clone(),
+                        topic.clone(),
                     ) {
                         Ok(result) => {
+                            // Send topic state change notification
+                            notification_manager::notify(
+                                notification_sender.clone(),
+                                Some(subscriber),
+                                topic,
+                                result.clone(),
+                            )
+                            .await;
+
                             if respond_to.send(result).is_err() {
                                 error!("Problem with internal communication");
                             }
@@ -282,13 +312,28 @@ pub(crate) async fn handle_message(
                         panic!("Persistency failure {e}")
                     }
                 },
+                #[cfg(test)]
+                SubscriptionEvent::GetRemoteSubscriptionChangeSender { respond_to } => {
+                    let _ = respond_to.send(remote_sub_sender.clone());
+                }
             },
             // deal with feedback/state updates from the remote subscription handlers
             Event::RemoteSubscription(event) => match event {
                 RemoteSubscriptionEvent::RemoteTopicStateUpdate { topic, state } => {
                     match remote_topics.set_topic_state(&topic, state) {
                         Ok(_) => {
-                            // no action here, but to keep the structure identical to all the other match branches...
+                            // Send topic state change notification - in the case of remote subscriptions,
+                            // the subscriber is usubscription service itself, so leave that field empty.
+                            notification_manager::notify(
+                                notification_sender.clone(),
+                                None,
+                                topic,
+                                SubscriptionStatus {
+                                    state: state.into(),
+                                    ..Default::default()
+                                },
+                            )
+                            .await;
                         }
                         Err(e) => {
                             panic!("Persistency failure {e}");

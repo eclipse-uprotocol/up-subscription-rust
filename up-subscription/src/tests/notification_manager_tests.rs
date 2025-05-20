@@ -96,7 +96,7 @@ mod tests {
 
             self.command_sender
                 .send(NotificationEvent::StateChange {
-                    subscriber,
+                    subscriber: Some(subscriber),
                     topic,
                     status,
                     respond_to,

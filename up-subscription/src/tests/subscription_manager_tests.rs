@@ -18,7 +18,7 @@ mod tests {
     use std::error::Error;
     use std::sync::Arc;
     use test_case::test_case;
-    use tokio::sync::{mpsc, mpsc::Sender, oneshot, Notify};
+    use tokio::sync::{mpsc, mpsc::Sender, mpsc::UnboundedSender, oneshot, Notify};
     use up_rust::MockTransport;
 
     use up_rust::core::usubscription::{
@@ -28,10 +28,13 @@ mod tests {
 
     use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;
     use crate::subscription_manager::{
-        handle_message, RequestKind, SubscribersResponse, SubscriptionEntry, SubscriptionEvent,
-        SubscriptionsResponse,
+        handle_message, RemoteSubscriptionEvent, RequestKind, SubscribersResponse,
+        SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
     };
-    use crate::{helpers, persistency, test_lib, usubscription, USubscriptionConfiguration};
+    use crate::{
+        helpers, notification_manager::NotificationEvent, persistency, test_lib, usubscription,
+        USubscriptionConfiguration,
+    };
 
     // Simple subscription-manager-actor front-end to use for testing
     struct CommandSender {
@@ -54,18 +57,87 @@ mod tests {
             let shutdown_notification = Arc::new(Notify::new());
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE);
+            let (notification_sender, _) =
+                mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
 
             helpers::spawn_and_log_error(async move {
                 handle_message(
                     config.clone(),
                     Arc::new(transport_mock),
                     command_receiver,
+                    notification_sender,
                     shutdown_notification,
                 )
                 .await;
 
                 Ok(())
             });
+            CommandSender { command_sender }
+        }
+
+        // Allows configuration of expected invoke_method() calls from subscription manager (provide expected request and response for utransport mock)
+        async fn new_with_expected_notification(expected_notification: NotificationEvent) -> Self {
+            let config = Arc::new(
+                USubscriptionConfiguration::create(
+                    test_lib::helpers::LOCAL_AUTHORITY.to_string(),
+                    None,
+                    None,
+                    false,
+                    None,
+                )
+                .unwrap(),
+            );
+            let transport_mock = MockTransport::default();
+            let shutdown_notification = Arc::new(Notify::new());
+            let (command_sender, command_receiver) =
+                mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE);
+            let (notification_sender, mut notification_receiver) =
+                mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
+
+            // Spawn off subscription manager task
+            helpers::spawn_and_log_error(async move {
+                handle_message(
+                    config.clone(),
+                    Arc::new(transport_mock),
+                    command_receiver,
+                    notification_sender,
+                    shutdown_notification,
+                )
+                .await;
+
+                Ok(())
+            });
+
+            // Spawn notification receiver task
+            helpers::spawn_and_log_error(async move {
+                match notification_receiver.recv().await {
+                    Some(NotificationEvent::StateChange {
+                        subscriber,
+                        topic,
+                        status,
+                        respond_to: _,
+                    }) => {
+                        if let NotificationEvent::StateChange {
+                            subscriber: expected_subscriber,
+                            topic: expected_topic,
+                            status: expected_status,
+                            respond_to: _,
+                        } = expected_notification
+                        {
+                            assert_eq!(subscriber, expected_subscriber, "subscriber mismatch");
+                            assert_eq!(topic, expected_topic, "topic mismatch");
+                            assert_eq!(status, expected_status, "status mismatch");
+                        } else {
+                            panic!("expected_notification is not StateChange variant");
+                        }
+                    }
+                    _ => {
+                        panic!("Expected a notification message, got nothing")
+                    }
+                }
+                Ok(())
+            });
+
             CommandSender { command_sender }
         }
 
@@ -96,12 +168,15 @@ mod tests {
                 )])
                 .await,
             );
+            let (notification_sender, _) =
+                mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
 
             helpers::spawn_and_log_error(async move {
                 handle_message(
                     config,
                     mock_transport,
                     command_receiver,
+                    notification_sender,
                     shutdown_notification,
                 )
                 .await;
@@ -215,6 +290,17 @@ mod tests {
                 topic_subscribers_replacement: remote_topics_replacement,
                 respond_to,
             };
+
+            self.command_sender.send(command).await?;
+            Ok(receive_from.await?)
+        }
+
+        async fn get_remote_subcription_change_sender(
+            &self,
+        ) -> Result<UnboundedSender<RemoteSubscriptionEvent>, Box<dyn Error>> {
+            let (respond_to, receive_from) =
+                oneshot::channel::<UnboundedSender<RemoteSubscriptionEvent>>();
+            let command = SubscriptionEvent::GetRemoteSubscriptionChangeSender { respond_to };
 
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
@@ -662,6 +748,115 @@ mod tests {
         let state = entry.unwrap();
         // ... it should still be in state SUBSCRIBED, as there is still another subscriber left
         assert_eq!(*state, State::SUBSCRIBED);
+    }
+
+    #[tokio::test]
+    async fn test_local_subscribe_notification() {
+        helpers::init_once();
+
+        // Prepare things
+        let topic = test_lib::helpers::local_topic1_uri();
+        let subscriber = test_lib::helpers::subscriber_uri1();
+        let (respond_to, state_changed) = oneshot::channel::<()>();
+
+        let expected_notification = NotificationEvent::StateChange {
+            subscriber: subscriber.clone().into(),
+            topic: topic.clone(),
+            status: SubscriptionStatus {
+                state: State::SUBSCRIBED.into(),
+                ..Default::default()
+            },
+            respond_to,
+        };
+
+        let command_sender =
+            CommandSender::new_with_expected_notification(expected_notification).await;
+
+        // Operation to test
+        let result = command_sender.subscribe(topic, subscriber, None).await;
+        assert!(result.is_ok());
+
+        let _ = state_changed.await;
+        // notification_checked.notified().await;
+    }
+
+    #[tokio::test]
+    async fn test_local_unsubscribe_notification() {
+        helpers::init_once();
+
+        // Prepare things
+        // Prepare things
+        #[allow(clippy::mutable_key_type)]
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
+        #[allow(clippy::mutable_key_type)]
+        let entry = desired_state
+            .entry(test_lib::helpers::local_topic1_uri())
+            .or_default();
+        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+
+        let topic = test_lib::helpers::local_topic1_uri();
+        let subscriber = test_lib::helpers::subscriber_uri1();
+        let (respond_to, state_changed) = oneshot::channel::<()>();
+
+        let expected_notification = NotificationEvent::StateChange {
+            subscriber: subscriber.clone().into(),
+            topic: topic.clone(),
+            status: SubscriptionStatus {
+                state: State::UNSUBSCRIBED.into(),
+                ..Default::default()
+            },
+            respond_to,
+        };
+
+        let command_sender =
+            CommandSender::new_with_expected_notification(expected_notification).await;
+
+        command_sender
+            .set_topic_subscribers(desired_state)
+            .await
+            .expect("Interaction with subscription handler broken");
+
+        // Operation to test
+        let result = command_sender.unsubscribe(topic, subscriber).await;
+        assert!(result.is_ok());
+
+        let _ = state_changed.await;
+    }
+
+    #[tokio::test]
+    async fn test_remote_subscribe_notification() {
+        helpers::init_once();
+
+        // Prepare things
+        let topic = test_lib::helpers::local_topic1_uri();
+        let (respond_to, state_changed) = oneshot::channel::<()>();
+
+        let expected_notification = NotificationEvent::StateChange {
+            subscriber: None,
+            topic: topic.clone(),
+            status: SubscriptionStatus {
+                state: State::SUBSCRIBE_PENDING.into(),
+                ..Default::default()
+            },
+            respond_to,
+        };
+
+        let command_sender =
+            CommandSender::new_with_expected_notification(expected_notification).await;
+
+        let sender = command_sender
+            .get_remote_subcription_change_sender()
+            .await
+            .expect("Error retrieving remote-subscription change event command channel");
+
+        // Initiate notification event
+        let _ = sender.send(RemoteSubscriptionEvent::RemoteTopicStateUpdate {
+            topic: topic.clone(),
+            state: State::SUBSCRIBE_PENDING,
+        });
+
+        // ensure that we have run through all the async layers and reached the notification assertion statements
+        let _ = state_changed.await;
     }
 
     #[test_case(None; "No offset")]

@@ -114,23 +114,6 @@ impl USubscriptionService {
         let server = Arc::new(InMemoryRpcServer::new(transport.clone(), config.clone()));
         let shutdown_notification = Arc::new(Notify::new());
 
-        // Set up subscription manager actor
-        let config_cloned = config.clone();
-        let transport_cloned = transport.clone();
-        let shutdown_notification_cloned = shutdown_notification.clone();
-        let (subscription_sender, subscription_receiver) =
-            mpsc::channel::<SubscriptionEvent>(config.subscription_command_buffer);
-        let subscription_joiner = helpers::spawn_and_log_error(async move {
-            subscription_manager::handle_message(
-                config_cloned,
-                transport_cloned,
-                subscription_receiver,
-                shutdown_notification_cloned,
-            )
-            .await;
-            Ok(())
-        });
-
         // Set up notification manager actor
         let config_cloned = config.clone();
         let transport_cloned = transport.clone();
@@ -142,6 +125,25 @@ impl USubscriptionService {
                 config_cloned,
                 transport_cloned,
                 notification_receiver,
+                shutdown_notification_cloned,
+            )
+            .await;
+            Ok(())
+        });
+
+        // Set up subscription manager actor
+        let config_cloned = config.clone();
+        let transport_cloned = transport.clone();
+        let shutdown_notification_cloned = shutdown_notification.clone();
+        let (subscription_sender, subscription_receiver) =
+            mpsc::channel::<SubscriptionEvent>(config.subscription_command_buffer);
+        let notification_sender_cloned = notification_sender.clone();
+        let subscription_joiner = helpers::spawn_and_log_error(async move {
+            subscription_manager::handle_message(
+                config_cloned,
+                transport_cloned,
+                subscription_receiver,
+                notification_sender_cloned,
                 shutdown_notification_cloned,
             )
             .await;
@@ -166,10 +168,8 @@ async fn register_handlers(
     let origin_filter = UUri::any_with_resource_id(0);
 
     // Link up request handlers
-    let subscription_request_handler = Arc::new(SubscriptionRequestHandler::new(
-        subscription_sender.clone(),
-        notification_sender.clone(),
-    ));
+    let subscription_request_handler =
+        Arc::new(SubscriptionRequestHandler::new(subscription_sender.clone()));
     server
         .register_endpoint(
             Some(&origin_filter),
@@ -179,10 +179,8 @@ async fn register_handlers(
         .await
         .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 
-    let unsubscribe_request_handler = Arc::new(UnubscribeRequestHandler::new(
-        subscription_sender.clone(),
-        notification_sender.clone(),
-    ));
+    let unsubscribe_request_handler =
+        Arc::new(UnubscribeRequestHandler::new(subscription_sender.clone()));
     server
         .register_endpoint(
             Some(&origin_filter),
