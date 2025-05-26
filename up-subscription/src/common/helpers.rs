@@ -14,7 +14,8 @@
 use log::*;
 use std::future::Future;
 use std::sync::Once;
-use tokio::task;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::{task, time::Duration};
 
 use up_rust::{
     communication::{ServiceInvocationError, UPayload},
@@ -73,4 +74,19 @@ where
     };
 
     Ok((request, source.clone()))
+}
+
+pub(crate) fn duration_until_timestamp(future_timestamp_millis: u128) -> Option<Duration> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
+
+    if future_timestamp_millis > now {
+        Some(Duration::from_millis(
+            (future_timestamp_millis - now) as u64,
+        ))
+    } else {
+        None // Timestamp is in the past
+    }
 }

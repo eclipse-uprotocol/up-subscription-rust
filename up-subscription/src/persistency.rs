@@ -19,11 +19,12 @@ use std::{convert::TryInto, path::PathBuf};
 
 use up_rust::{core::usubscription::State as TopicState, UUri};
 
-use crate::{usubscription, USubscriptionConfiguration};
+use crate::{helpers, usubscription, USubscriptionConfiguration};
 
 // Whether to include 'up:' in serialized UUris
 const PERSIST_UP_SCHEMA: bool = true;
 
+// Semantic structure of this: HashMap<Topic, HashMap<Subscriber, Option<Expiry>>
 #[allow(dead_code)] // I have no idea why clippy insists on this here - this type is most definitely being used...
 pub(crate) type SubscriptionSet =
     HashMap<UUri, HashMap<UUri, Option<usubscription::ExpiryTimestamp>>>;
@@ -147,7 +148,7 @@ impl SubscriptionsStore {
 
         if let Some(mut subscriber_list) = self
             .persistency
-            .get::<HashMap<String, Option<u32>>>(topic_string)
+            .get::<HashMap<String, Option<u128>>>(topic_string)
         {
             subscriber_list.remove(subscriber_string);
 
@@ -185,7 +186,7 @@ impl SubscriptionsStore {
         // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
         if let Some(list) = self
             .persistency
-            .get::<HashMap<String, Option<u32>>>(topic_string)
+            .get::<HashMap<String, Option<u128>>>(topic_string)
         {
             for entry in list.keys() {
                 subscribers.push(UUri::try_from(entry.clone()).map_err(|e| {
@@ -210,7 +211,7 @@ impl SubscriptionsStore {
         let mut result_subs: Vec<UUri> = Vec::new();
 
         for entry in self.persistency.iter() {
-            if let Some(subscribers) = entry.get_value::<HashMap<String, Option<u32>>>() {
+            if let Some(subscribers) = entry.get_value::<HashMap<String, Option<u128>>>() {
                 if subscribers.contains_key(subscriber_string) {
                     result_subs.push(UUri::try_from(entry.get_key()).map_err(|e| {
                         PersistencyError::serialization_error(format!(
@@ -222,6 +223,54 @@ impl SubscriptionsStore {
         }
 
         Ok(result_subs)
+    }
+
+    /// This function does two things
+    /// - remove any subscription relationships from persistency that have an expiration timestamp that lies in the past
+    /// - return all remaining subscription relationships which have an expiration timestamp that has not yet expired
+    pub(crate) fn get_and_prune_expiring_subscriptions(
+        &mut self,
+    ) -> Result<Vec<(UUri, UUri, u128)>, PersistencyError> {
+        let mut expiring_subscriptions: Vec<(UUri, UUri, u128)> = Vec::new();
+
+        // Extract every subscription entry that carries an expiration timestamp value
+        for topic_subs in self.persistency.iter() {
+            if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<u128>>>() {
+                for (subscriber, expiry) in entry {
+                    if let Some(expiry) = expiry {
+                        if helpers::duration_until_timestamp(expiry).is_some() {
+                            expiring_subscriptions.push((
+                                UUri::try_from(subscriber.clone()).map_err(|e| {
+                                    PersistencyError::serialization_error(format!(
+                                        "Error deserializing subscriber uri {e}"
+                                    ))
+                                })?,
+                                UUri::try_from(topic_subs.get_key()).map_err(|e| {
+                                    PersistencyError::serialization_error(format!(
+                                        "Error deserializing subscriber uri {e}"
+                                    ))
+                                })?,
+                                expiry,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove every expiration-subscription entry that has already expired from persistency
+        expiring_subscriptions.retain(|(subscriber, topic, expiry)| {
+            if helpers::duration_until_timestamp(*expiry).is_none() {
+                // Timestamp is in the past
+                let _ = self.remove_subscription(subscriber, topic);
+                false // Remove this entry from the collection
+            } else {
+                true // Keep this entry
+            }
+        });
+
+        // return remaining subscription entries (all entries with expiration timestamp in the future)
+        Ok(expiring_subscriptions)
     }
 
     #[cfg(test)]

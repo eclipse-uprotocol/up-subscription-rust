@@ -14,4 +14,5 @@
 pub(crate) mod test_lib;
 
 mod notification_manager_tests;
+mod persistency_tests;
 mod subscription_manager_tests;

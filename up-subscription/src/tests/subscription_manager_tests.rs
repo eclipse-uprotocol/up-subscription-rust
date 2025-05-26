@@ -17,23 +17,28 @@ mod tests {
     use std::collections::HashMap;
     use std::error::Error;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use test_case::test_case;
-    use tokio::sync::{mpsc, mpsc::Sender, mpsc::UnboundedSender, oneshot, Notify};
-    use up_rust::MockTransport;
+    use tokio::sync::{mpsc, mpsc::Sender, oneshot, Notify};
 
-    use up_rust::core::usubscription::{
-        State, SubscriptionRequest, SubscriptionResponse, SubscriptionStatus, UnsubscribeRequest,
+    use up_rust::{
+        core::usubscription::{
+            State, SubscriptionRequest, SubscriptionResponse, SubscriptionStatus,
+            UnsubscribeRequest,
+        },
+        MockTransport, UCode, UStatus, UUri,
     };
-    use up_rust::{UCode, UStatus, UUri};
 
-    use crate::configuration::DEFAULT_COMMAND_BUFFER_SIZE;
-    use crate::subscription_manager::{
-        handle_message, RemoteSubscriptionEvent, RequestKind, SubscribersResponse,
-        SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
-    };
     use crate::{
-        helpers, notification_manager::NotificationEvent, persistency, test_lib, usubscription,
-        USubscriptionConfiguration,
+        configuration::DEFAULT_COMMAND_BUFFER_SIZE,
+        helpers,
+        notification_manager::NotificationEvent,
+        persistency,
+        subscription_manager::{
+            handle_message, InternalSubscriptionEvent, RequestKind, SubscribersResponse,
+            SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
+        },
+        test_lib, usubscription, USubscriptionConfiguration,
     };
 
     // Simple subscription-manager-actor front-end to use for testing
@@ -57,8 +62,33 @@ mod tests {
             let shutdown_notification = Arc::new(Notify::new());
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE);
-            let (notification_sender, _) =
+            let (notification_sender, mut notification_receiver) =
                 mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
+
+            // Spawn notification receiver task
+            helpers::spawn_and_log_error(async move {
+                match notification_receiver.recv().await {
+                    Some(NotificationEvent::StateChange {
+                        subscriber,
+                        topic,
+                        status,
+                        respond_to,
+                    }) => {
+                        println!(
+                            "Change Notification received: {} - {} - {}",
+                            subscriber.unwrap().to_uri(true),
+                            topic.to_uri(true),
+                            status
+                        );
+
+                        let _ = respond_to.send(());
+                    }
+                    _ => {
+                        panic!("Expected a notification message, got nothing")
+                    }
+                }
+                Ok(())
+            });
 
             helpers::spawn_and_log_error(async move {
                 handle_message(
@@ -94,20 +124,6 @@ mod tests {
             let (notification_sender, mut notification_receiver) =
                 mpsc::channel::<NotificationEvent>(config.notification_command_buffer);
 
-            // Spawn off subscription manager task
-            helpers::spawn_and_log_error(async move {
-                handle_message(
-                    config.clone(),
-                    Arc::new(transport_mock),
-                    command_receiver,
-                    notification_sender,
-                    shutdown_notification,
-                )
-                .await;
-
-                Ok(())
-            });
-
             // Spawn notification receiver task
             helpers::spawn_and_log_error(async move {
                 match notification_receiver.recv().await {
@@ -135,6 +151,20 @@ mod tests {
                         panic!("Expected a notification message, got nothing")
                     }
                 }
+                Ok(())
+            });
+
+            // Spawn off subscription manager task
+            helpers::spawn_and_log_error(async move {
+                handle_message(
+                    config.clone(),
+                    Arc::new(transport_mock),
+                    command_receiver,
+                    notification_sender,
+                    shutdown_notification,
+                )
+                .await;
+
                 Ok(())
             });
 
@@ -297,9 +327,9 @@ mod tests {
 
         async fn get_remote_subcription_change_sender(
             &self,
-        ) -> Result<UnboundedSender<RemoteSubscriptionEvent>, Box<dyn Error>> {
+        ) -> Result<Sender<InternalSubscriptionEvent>, Box<dyn Error>> {
             let (respond_to, receive_from) =
-                oneshot::channel::<UnboundedSender<RemoteSubscriptionEvent>>();
+                oneshot::channel::<Sender<InternalSubscriptionEvent>>();
             let command = SubscriptionEvent::GetRemoteSubscriptionChangeSender { respond_to };
 
             self.command_sender.send(command).await?;
@@ -351,26 +381,40 @@ mod tests {
         assert_eq!(topic_subscribers, desired_state);
     }
 
-    #[test_case(vec![(UUri::default(), UUri::default(), None)]; "Default susbcriber-topic-no_expiry")]
-    #[test_case(vec![(UUri::default(), UUri::default(), Some(1000))]; "Default susbcriber-topic-some_expiry")]
     #[tokio::test]
-    async fn test_subscribe_with_expiry(
-        topic_subscribers: Vec<(UUri, UUri, Option<usubscription::ExpiryTimestamp>)>,
-    ) {
+    async fn test_subscribe_with_expiry() {
         helpers::init_once();
         let command_sender = CommandSender::new();
 
-        // Prepare things
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        for (topic, subscriber, expiry) in topic_subscribers {
-            desired_state
-                .entry(topic.clone())
-                .or_default()
-                .insert(subscriber.clone(), expiry);
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Error getting now timestamp")
+            .as_millis();
 
+        // Prepare things
+        let mut desired_state: Vec<(UUri, UUri, Option<u128>)> = vec![
+            (
+                test_lib::helpers::subscriber_uri1(),
+                test_lib::helpers::local_topic1_uri(),
+                None,
+            ),
+            (
+                test_lib::helpers::subscriber_uri2(),
+                test_lib::helpers::local_topic2_uri(),
+                Some(1000),
+            ),
+            (
+                test_lib::helpers::subscriber_uri3(),
+                test_lib::helpers::local_topic2_uri(),
+                Some(now + 1000),
+            ),
+        ];
+
+        for (subscriber, topic, expiry) in desired_state.iter() {
             // Operation to test
-            let result = command_sender.subscribe(topic, subscriber, expiry).await;
+            let result = command_sender
+                .subscribe(topic.clone(), subscriber.clone(), *expiry)
+                .await;
             assert!(result.is_ok());
 
             // Verify operation result content
@@ -378,12 +422,25 @@ mod tests {
         }
 
         // Verify iternal bookeeping
-        let topic_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let topic_subscribers = topic_subscribers.unwrap();
-        assert_eq!(topic_subscribers.len(), desired_state.len());
-        assert_eq!(topic_subscribers, desired_state);
+        let actual_subscribers = command_sender.get_topic_subscribers().await;
+        assert!(actual_subscribers.is_ok());
+
+        let flattened_subscribers: Vec<(UUri, UUri, Option<u128>)> = actual_subscribers
+            .unwrap()
+            .iter()
+            .flat_map(|(outer_key, inner_map)| {
+                inner_map
+                    .iter()
+                    .map(move |(inner_key, value)| (outer_key.clone(), inner_key.clone(), *value))
+            })
+            .collect();
+
+        desired_state.remove(1); // Remote item that has expiry timestamp in the past, so hasn't been added by subscription manager
+        assert_eq!(flattened_subscribers.len(), desired_state.len());
+
+        for (topic, subscriber, expiry) in flattened_subscribers {
+            assert!(desired_state.contains(&(subscriber, topic, expiry)));
+        }
     }
 
     #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBE_PENDING; "Remote topic, remote state SUBSCRIBED_PENDING")]
@@ -850,10 +907,12 @@ mod tests {
             .expect("Error retrieving remote-subscription change event command channel");
 
         // Initiate notification event
-        let _ = sender.send(RemoteSubscriptionEvent::RemoteTopicStateUpdate {
-            topic: topic.clone(),
-            state: State::SUBSCRIBE_PENDING,
-        });
+        let _ = sender
+            .send(InternalSubscriptionEvent::TopicStateUpdate {
+                topic: topic.clone(),
+                state: State::SUBSCRIBE_PENDING,
+            })
+            .await;
 
         // ensure that we have run through all the async layers and reached the notification assertion statements
         let _ = state_changed.await;
