@@ -151,7 +151,7 @@ impl SubscriptionsStore {
 
         if let Some(mut subscriber_list) = self
             .persistency
-            .get::<HashMap<String, Option<u128>>>(topic_string)
+            .get::<HashMap<String, Option<ExpiryTimestamp>>>(topic_string)
         {
             subscriber_list.remove(subscriber_string);
 
@@ -189,7 +189,7 @@ impl SubscriptionsStore {
         // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
         if let Some(list) = self
             .persistency
-            .get::<HashMap<String, Option<u128>>>(topic_string)
+            .get::<HashMap<String, Option<ExpiryTimestamp>>>(topic_string)
         {
             for entry in list.keys() {
                 subscribers.push(UUri::try_from(entry.clone()).map_err(|e| {
@@ -214,7 +214,8 @@ impl SubscriptionsStore {
         let mut result_subs: Vec<TopicUUri> = Vec::new();
 
         for entry in self.persistency.iter() {
-            if let Some(subscribers) = entry.get_value::<HashMap<String, Option<u128>>>() {
+            if let Some(subscribers) = entry.get_value::<HashMap<String, Option<ExpiryTimestamp>>>()
+            {
                 if subscribers.contains_key(subscriber_string) {
                     result_subs.push(UUri::try_from(entry.get_key()).map_err(|e| {
                         PersistencyError::serialization_error(format!(
@@ -233,12 +234,14 @@ impl SubscriptionsStore {
     /// - return all remaining subscription relationships which have an expiration timestamp that has not yet expired
     pub(crate) fn get_and_prune_expiring_subscriptions(
         &mut self,
-    ) -> Result<Vec<(SubscriberUUri, TopicUUri, u128)>, PersistencyError> {
-        let mut expiring_subscriptions: Vec<(SubscriberUUri, TopicUUri, u128)> = Vec::new();
+    ) -> Result<Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)>, PersistencyError> {
+        let mut expiring_subscriptions: Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)> =
+            Vec::new();
 
         // Extract every subscription entry that carries an expiration timestamp value
         for topic_subs in self.persistency.iter() {
-            if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<u128>>>() {
+            if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<ExpiryTimestamp>>>()
+            {
                 for (subscriber, expiry) in entry {
                     if let Some(expiry) = expiry {
                         if helpers::duration_until_timestamp(expiry).is_some() {

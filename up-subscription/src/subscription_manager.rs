@@ -683,7 +683,7 @@ async fn remote_unsubscribe(
 // This is hopefully good enough for now - in case we get very many expiring subscriptions, might have
 // to look for an approach that scales better.
 fn schedule_unsubscribe(
-    expiry: u128,
+    expiry: ExpiryTimestamp,
     subscriber: SubscriberUUri,
     topic: TopicUUri,
     sender: Sender<InternalSubscriptionEvent>,

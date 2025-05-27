@@ -394,7 +394,7 @@ mod tests {
             .as_millis();
 
         // Prepare things
-        let mut desired_state: Vec<(SubscriberUUri, TopicUUri, Option<u128>)> = vec![
+        let mut desired_state: Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)> = vec![
             (
                 test_lib::helpers::subscriber_uri1(),
                 test_lib::helpers::local_topic1_uri(),
@@ -427,7 +427,7 @@ mod tests {
         let actual_subscribers = command_sender.get_topic_subscribers().await;
         assert!(actual_subscribers.is_ok());
 
-        let flattened_subscribers: Vec<(SubscriberUUri, TopicUUri, Option<u128>)> =
+        let flattened_subscribers: Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)> =
             actual_subscribers
                 .unwrap()
                 .iter()
