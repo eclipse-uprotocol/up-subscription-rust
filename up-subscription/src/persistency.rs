@@ -240,26 +240,25 @@ impl SubscriptionsStore {
 
         // Extract every subscription entry that carries an expiration timestamp value
         for topic_subs in self.persistency.iter() {
-            if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<ExpiryTimestamp>>>()
-            {
-                for (subscriber, expiry) in entry {
-                    if let Some(expiry) = expiry {
-                        if helpers::duration_until_timestamp(expiry).is_some() {
-                            expiring_subscriptions.push((
-                                UUri::try_from(subscriber.clone()).map_err(|e| {
-                                    PersistencyError::serialization_error(format!(
-                                        "Error deserializing subscriber uri {e}"
-                                    ))
-                                })?,
-                                UUri::try_from(topic_subs.get_key()).map_err(|e| {
-                                    PersistencyError::serialization_error(format!(
-                                        "Error deserializing subscriber uri {e}"
-                                    ))
-                                })?,
-                                expiry,
-                            ));
-                        }
-                    }
+            if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<u128>>>() {
+                for (subscriber, expiry) in entry
+                    .iter()
+                    // filter out any entries where expiry is None
+                    .filter_map(|(subscriber, expiry)| expiry.map(|exp| (subscriber, exp)))
+                {
+                    expiring_subscriptions.push((
+                        UUri::try_from(subscriber.clone()).map_err(|e| {
+                            PersistencyError::serialization_error(format!(
+                                "Error deserializing subscriber uri {e}"
+                            ))
+                        })?,
+                        UUri::try_from(topic_subs.get_key()).map_err(|e| {
+                            PersistencyError::serialization_error(format!(
+                                "Error deserializing subscriber uri {e}"
+                            ))
+                        })?,
+                        expiry,
+                    ));
                 }
             }
         }
@@ -267,9 +266,9 @@ impl SubscriptionsStore {
         // Remove every expiration-subscription entry that has already expired from persistency
         expiring_subscriptions.retain(|(subscriber, topic, expiry)| {
             if helpers::duration_until_timestamp(*expiry).is_none() {
-                // Timestamp is in the past
+                // Timestamp expiry is in the past, so remove it from persistency,
                 let _ = self.remove_subscription(subscriber, topic);
-                false // Remove this entry from the collection
+                false // and remove this entry from the collection
             } else {
                 true // Keep this entry
             }
