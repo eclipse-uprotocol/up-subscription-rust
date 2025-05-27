@@ -14,7 +14,7 @@
 use log::*;
 #[cfg(test)]
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, mpsc::Receiver, mpsc::Sender, oneshot, Notify},
     time::sleep,
@@ -43,12 +43,17 @@ use crate::{
 // via tokio mpsc channel. This design allows to forgo the use of any synhronization primitives on the subscription-tracking container
 // data types, as any access is coordinated/serialized via the Event selection loop.
 
-// Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation
+// Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation.
 const UP_MAX_FETCH_SUBSCRIBERS_LEN: usize = 100;
-// Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation
+// Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation.
 const UP_MAX_FETCH_SUBSCRIPTIONS_LEN: usize = 100;
 
+// Queue size of message channel for internal commands - like subscription status change messages or subscription expiration commands.
 const INTERNAL_COMMAND_BUFFER_SIZE: usize = 128;
+
+// Timeout to use when sending subscription removal command after a subscription has expired; if exceeded, subscription won't be removed
+// directly but will be cleaned up at next startup.
+const SUBSCRIPTION_EXPIRY_REMOVAL_TIMEOUT_SECONDS: u64 = 5;
 
 #[derive(Debug)]
 pub(crate) enum RequestKind {
@@ -688,14 +693,19 @@ fn schedule_unsubscribe(
     topic: TopicUUri,
     sender: Sender<InternalSubscriptionEvent>,
 ) {
-    tokio::spawn(async move {
+    helpers::spawn_and_log_error(async move {
         if let Some(delay) = helpers::duration_until_timestamp(expiry) {
             sleep(delay).await;
         }
 
-        let _ = sender
-            .send(InternalSubscriptionEvent::RemoveExpiredSubscription { subscriber, topic })
-            .await;
+        sender
+            .send_timeout(
+                InternalSubscriptionEvent::RemoveExpiredSubscription { subscriber, topic },
+                Duration::from_secs(SUBSCRIPTION_EXPIRY_REMOVAL_TIMEOUT_SECONDS),
+            )
+            .await?;
+
+        Ok(())
     });
 }
 
