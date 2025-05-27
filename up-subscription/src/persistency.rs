@@ -104,8 +104,8 @@ impl SubscriptionsStore {
         expiry: Option<ExpiryTimestamp>,
     ) -> Result<bool, PersistencyError> {
         // serialize inputs to types used in persistency
-        let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
         let subscriber_string = &subscriber.to_uri(PERSIST_UP_SCHEMA);
+        let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
 
         Ok(
             if let Some(mut subscriber_list) = self
@@ -229,24 +229,18 @@ impl SubscriptionsStore {
         Ok(result_subs)
     }
 
-    /// This function does two things
-    /// - remove any subscription relationships from persistency that have an expiration timestamp that lies in the past
-    /// - return all remaining subscription relationships which have an expiration timestamp that has not yet expired
-    pub(crate) fn get_and_prune_expiring_subscriptions(
+    // Return a flattened list of all subscriptions stored in persistency
+    pub(crate) fn get_flattened_subscriptions(
         &mut self,
-    ) -> Result<Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)>, PersistencyError> {
-        let mut expiring_subscriptions: Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)> =
+    ) -> Result<Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)>, PersistencyError> {
+        let mut flattened_subscriptions: Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)> =
             Vec::new();
 
         // Extract every subscription entry that carries an expiration timestamp value
         for topic_subs in self.persistency.iter() {
             if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<u128>>>() {
-                for (subscriber, expiry) in entry
-                    .iter()
-                    // filter out any entries where expiry is None
-                    .filter_map(|(subscriber, expiry)| expiry.map(|exp| (subscriber, exp)))
-                {
-                    expiring_subscriptions.push((
+                for (subscriber, expiry) in entry.iter() {
+                    flattened_subscriptions.push((
                         UUri::try_from(subscriber.clone()).map_err(|e| {
                             PersistencyError::serialization_error(format!(
                                 "Error deserializing subscriber uri {e}"
@@ -257,11 +251,27 @@ impl SubscriptionsStore {
                                 "Error deserializing subscriber uri {e}"
                             ))
                         })?,
-                        expiry,
+                        *expiry,
                     ));
                 }
             }
         }
+
+        Ok(flattened_subscriptions)
+    }
+
+    /// This function does two things
+    /// - remove any subscription relationships from persistency that have an expiration timestamp that lies in the past
+    /// - return all remaining subscription relationships which have an expiration timestamp that has not yet expired
+    pub(crate) fn get_and_prune_expiring_subscriptions(
+        &mut self,
+    ) -> Result<Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)>, PersistencyError> {
+        // Extract every subscription entry that carries an expiration timestamp value
+        let mut expiring_subscriptions: Vec<(UUri, UUri, u128)> = self
+            .get_flattened_subscriptions()?
+            .into_iter()
+            .filter_map(|(subscriber, topic, expiry)| expiry.map(|exp| (subscriber, topic, exp)))
+            .collect();
 
         // Remove every expiration-subscription entry that has already expired from persistency
         expiring_subscriptions.retain(|(subscriber, topic, expiry)| {

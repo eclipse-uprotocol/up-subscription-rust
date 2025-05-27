@@ -47,29 +47,41 @@ mod tests {
         let _ = subscriptions.add_subscription(
             &test_lib::helpers::subscriber_uri2(),
             &test_lib::helpers::local_topic2_uri(),
+            Some(1000),
+        );
+        let _ = subscriptions.add_subscription(
+            &test_lib::helpers::subscriber_uri3(),
+            &test_lib::helpers::local_topic2_uri(),
             Some(expiry_in_1s),
         );
 
-        // retrieve all persisted subscription relationships - should be the two we added above
-        #[allow(clippy::mutable_key_type)]
-        let data = subscriptions
-            .get_data()
+        let flattened_subscriptions = subscriptions
+            .get_flattened_subscriptions()
             .expect("Error interacting with subscription persistency");
-        assert!(data.len() == 2);
+        assert!(
+            flattened_subscriptions.len() == 3,
+            "Incorrect number of persisted subscription relationships - should be 3"
+        );
 
-        // get all subscriptions that have an expiration timestamp set - should be one, as added above
+        // get all subscriptions that have a future expiration timestamp set - should be 1, as one has None and another has a past timestamp
         let list = subscriptions
             .get_and_prune_expiring_subscriptions()
             .expect("Error interacting with subscription persistency");
-        assert!(list.len() == 1);
+        assert!(
+            list.len() == 1,
+            "There should only be 1 subscription with an expiration timer in persistency"
+        );
 
-        // wait a second, this should result in the one subscription expiration timestamp to pass
-        sleep(Duration::from_millis(2000)).await;
+        // wait a moment, this should result in the one subscription expiration timestamp to pass
+        sleep(Duration::from_millis(1500)).await;
 
         // now, the one timed subscription we had should be pruned by get_and_prune_expiring_subscriptions() function call, so list should be empty
         let list = subscriptions
             .get_and_prune_expiring_subscriptions()
             .expect("Error interacting with subscription persistency");
-        assert!(list.is_empty());
+        assert!(
+            list.is_empty(),
+            "There should be no subscription with an expiration timestamp left at this point"
+        );
     }
 }
