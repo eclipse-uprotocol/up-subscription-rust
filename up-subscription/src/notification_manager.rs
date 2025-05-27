@@ -22,10 +22,14 @@ use up_rust::{
         usubscription_uri, SubscriberInfo, SubscriptionStatus, Update,
         RESOURCE_ID_SUBSCRIPTION_CHANGE,
     },
-    UMessageBuilder, UTransport, UUri, UUID,
+    UMessageBuilder, UTransport, UUID,
 };
 
-use crate::{helpers, persistency, usubscription, USubscriptionConfiguration};
+use crate::{
+    helpers, persistency,
+    usubscription::{SubscriberUUri, TopicUUri, INCLUDE_SCHEMA},
+    USubscriptionConfiguration,
+};
 
 // This is the core business logic for tracking and sending subscription update notifications. It is currently implemented as a single
 // event-consuming function `notification_engine()`, which is supposed to be spawned into a task, and process the various notification
@@ -35,27 +39,27 @@ use crate::{helpers, persistency, usubscription, USubscriptionConfiguration};
 #[derive(Debug)]
 pub(crate) enum NotificationEvent {
     AddNotifyee {
-        subscriber: UUri,
-        topic: UUri,
+        subscriber: SubscriberUUri,
+        topic: TopicUUri,
     },
     RemoveNotifyee {
-        subscriber: UUri,
+        subscriber: SubscriberUUri,
     },
     StateChange {
-        subscriber: Option<UUri>,
-        topic: UUri,
+        subscriber: Option<SubscriberUUri>,
+        topic: TopicUUri,
         status: SubscriptionStatus,
         respond_to: oneshot::Sender<()>,
     },
     // Purely for use during testing: get copy of current notifyee ledger
     #[cfg(test)]
     GetNotificationTopics {
-        respond_to: oneshot::Sender<HashMap<UUri, UUri>>,
+        respond_to: oneshot::Sender<HashMap<SubscriberUUri, TopicUUri>>,
     },
     // Purely for use during testing: force-set new notifyees ledger
     #[cfg(test)]
     SetNotificationTopics {
-        notification_topics_replacement: HashMap<UUri, UUri>,
+        notification_topics_replacement: HashMap<SubscriberUUri, TopicUUri>,
         respond_to: oneshot::Sender<()>,
     },
 }
@@ -148,18 +152,18 @@ pub(crate) async fn notification_engine(
                     for topic_entry in topics {
                         debug!(
                             "Sending notification to ({}): topic {}, subscriber {}, status {}",
-                            topic_entry.to_uri(usubscription::INCLUDE_SCHEMA),
+                            topic_entry.to_uri(INCLUDE_SCHEMA),
                             update
                                 .topic
                                 .as_ref()
                                 .unwrap_or_default()
-                                .to_uri(usubscription::INCLUDE_SCHEMA),
+                                .to_uri(INCLUDE_SCHEMA),
                             update
                                 .subscriber
                                 .uri
                                 .as_ref()
                                 .unwrap_or_default()
-                                .to_uri(usubscription::INCLUDE_SCHEMA),
+                                .to_uri(INCLUDE_SCHEMA),
                             update.status.as_ref().unwrap_or_default()
                         );
 
@@ -206,8 +210,8 @@ pub(crate) async fn notification_engine(
 // susbcriber is an Option, because in the case ob remote subscription state changes, there is no subscriber (other than local usubscription service)
 pub(crate) async fn notify(
     notification_sender: Sender<NotificationEvent>,
-    subscriber: Option<UUri>,
-    topic: UUri,
+    subscriber: Option<SubscriberUUri>,
+    topic: TopicUUri,
     status: SubscriptionStatus,
 ) {
     let (respond_to, receive_from) = oneshot::channel::<()>();

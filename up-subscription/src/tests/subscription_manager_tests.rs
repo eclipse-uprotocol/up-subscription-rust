@@ -38,7 +38,9 @@ mod tests {
             handle_message, InternalSubscriptionEvent, RequestKind, SubscribersResponse,
             SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
         },
-        test_lib, usubscription, USubscriptionConfiguration,
+        test_lib,
+        usubscription::{ExpiryTimestamp, SubscriberUUri, TopicUUri},
+        USubscriptionConfiguration,
     };
 
     // Simple subscription-manager-actor front-end to use for testing
@@ -217,9 +219,9 @@ mod tests {
 
         async fn subscribe(
             &self,
-            topic: UUri,
-            subscriber: UUri,
-            expiry: Option<usubscription::ExpiryTimestamp>,
+            topic: TopicUUri,
+            subscriber: SubscriberUUri,
+            expiry: Option<ExpiryTimestamp>,
         ) -> Result<SubscriptionStatus, Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
             let command = SubscriptionEvent::AddSubscription {
@@ -234,8 +236,8 @@ mod tests {
 
         async fn unsubscribe(
             &self,
-            topic: UUri,
-            subscriber: UUri,
+            topic: TopicUUri,
+            subscriber: SubscriberUUri,
         ) -> Result<SubscriptionStatus, Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
             let command = SubscriptionEvent::RemoveSubscription {
@@ -249,7 +251,7 @@ mod tests {
 
         async fn fetch_subscribers(
             &self,
-            topic: UUri,
+            topic: TopicUUri,
             offset: Option<u32>,
         ) -> Result<SubscribersResponse, Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
@@ -302,8 +304,8 @@ mod tests {
             Ok(receive_from.await?)
         }
 
-        async fn get_remote_topics(&self) -> Result<HashMap<UUri, State>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<HashMap<UUri, State>>();
+        async fn get_remote_topics(&self) -> Result<HashMap<TopicUUri, State>, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<HashMap<TopicUUri, State>>();
             let command = SubscriptionEvent::GetRemoteTopics { respond_to };
 
             self.command_sender.send(command).await?;
@@ -313,7 +315,7 @@ mod tests {
         #[allow(clippy::mutable_key_type)]
         async fn set_remote_topics(
             &self,
-            remote_topics_replacement: HashMap<UUri, State>,
+            remote_topics_replacement: HashMap<TopicUUri, State>,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             let command = SubscriptionEvent::SetRemoteTopics {
@@ -351,7 +353,7 @@ mod tests {
          (test_lib::helpers::local_topic2_uri(), test_lib::helpers::subscriber_uri2())
          ]; "Multiple susbcriber-topic combinations")]
     #[tokio::test]
-    async fn test_subscribe(topic_subscribers: Vec<(UUri, UUri)>) {
+    async fn test_subscribe(topic_subscribers: Vec<(TopicUUri, SubscriberUUri)>) {
         helpers::init_once();
         let command_sender = CommandSender::new();
 
@@ -392,7 +394,7 @@ mod tests {
             .as_millis();
 
         // Prepare things
-        let mut desired_state: Vec<(UUri, UUri, Option<u128>)> = vec![
+        let mut desired_state: Vec<(SubscriberUUri, TopicUUri, Option<u128>)> = vec![
             (
                 test_lib::helpers::subscriber_uri1(),
                 test_lib::helpers::local_topic1_uri(),
@@ -425,15 +427,16 @@ mod tests {
         let actual_subscribers = command_sender.get_topic_subscribers().await;
         assert!(actual_subscribers.is_ok());
 
-        let flattened_subscribers: Vec<(UUri, UUri, Option<u128>)> = actual_subscribers
-            .unwrap()
-            .iter()
-            .flat_map(|(outer_key, inner_map)| {
-                inner_map
-                    .iter()
-                    .map(move |(inner_key, value)| (outer_key.clone(), inner_key.clone(), *value))
-            })
-            .collect();
+        let flattened_subscribers: Vec<(SubscriberUUri, TopicUUri, Option<u128>)> =
+            actual_subscribers
+                .unwrap()
+                .iter()
+                .flat_map(|(outer_key, inner_map)| {
+                    inner_map.iter().map(move |(inner_key, value)| {
+                        (outer_key.clone(), inner_key.clone(), *value)
+                    })
+                })
+                .collect();
 
         desired_state.remove(1); // Remote item that has expiry timestamp in the past, so hasn't been added by subscription manager
         assert_eq!(flattened_subscribers.len(), desired_state.len());
@@ -446,7 +449,7 @@ mod tests {
     #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBE_PENDING; "Remote topic, remote state SUBSCRIBED_PENDING")]
     #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBED; "Remote topic, remote state SUBSCRIBED")]
     #[tokio::test]
-    async fn test_remote_subscribe(remote_topic: UUri, remote_state: State) {
+    async fn test_remote_subscribe(remote_topic: TopicUUri, remote_state: State) {
         helpers::init_once();
 
         // Prepare things
@@ -697,7 +700,7 @@ mod tests {
             .expect("Interaction with subscription handler broken");
 
         #[allow(clippy::mutable_key_type)]
-        let mut desired_remote_state: HashMap<UUri, State> = HashMap::new();
+        let mut desired_remote_state: HashMap<TopicUUri, State> = HashMap::new();
         desired_remote_state.insert(remote_topic.clone(), State::SUBSCRIBED);
         command_sender
             .set_remote_topics(desired_remote_state)
@@ -764,7 +767,7 @@ mod tests {
             .expect("Interaction with subscription handler broken");
 
         #[allow(clippy::mutable_key_type)]
-        let mut desired_remote_state: HashMap<UUri, State> = HashMap::new();
+        let mut desired_remote_state: HashMap<TopicUUri, State> = HashMap::new();
         desired_remote_state.insert(remote_topic.clone(), State::SUBSCRIBED);
         command_sender
             .set_remote_topics(desired_remote_state)
@@ -1006,7 +1009,7 @@ mod tests {
         // Prepare things
         let desired_subscriber = test_lib::helpers::subscriber_uri1();
 
-        let mut expected_subscribers: Vec<(UUri, UUri)> = Vec::new();
+        let mut expected_subscribers: Vec<(SubscriberUUri, TopicUUri)> = Vec::new();
         for (topic, subscribers) in desired_state.clone() {
             if subscribers.contains_key(&desired_subscriber) {
                 if let Some((subscriber, _expiry)) = subscribers.get_key_value(&desired_subscriber)

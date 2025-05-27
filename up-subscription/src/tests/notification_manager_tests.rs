@@ -25,14 +25,16 @@ mod tests {
         core::usubscription::{
             usubscription_uri, State, SubscriptionStatus, Update, RESOURCE_ID_SUBSCRIPTION_CHANGE,
         },
-        UMessage, UMessageBuilder, UUri, UUID,
+        UMessage, UMessageBuilder, UUID,
     };
 
     use crate::{
         configuration::DEFAULT_COMMAND_BUFFER_SIZE,
         helpers,
         notification_manager::{notification_engine, NotificationEvent},
-        test_lib, USubscriptionConfiguration,
+        test_lib,
+        usubscription::{SubscriberUUri, TopicUUri},
+        USubscriptionConfiguration,
     };
 
     // Simple subscription-manager-actor front-end to use for testing
@@ -72,14 +74,18 @@ mod tests {
             CommandSender { command_sender }
         }
 
-        async fn add_notifyee(&self, subscriber: UUri, topic: UUri) -> Result<(), Box<dyn Error>> {
+        async fn add_notifyee(
+            &self,
+            subscriber: SubscriberUUri,
+            topic: TopicUUri,
+        ) -> Result<(), Box<dyn Error>> {
             Ok(self
                 .command_sender
                 .send(NotificationEvent::AddNotifyee { subscriber, topic })
                 .await?)
         }
 
-        async fn remove_notifyee(&self, subscriber: UUri) -> Result<(), Box<dyn Error>> {
+        async fn remove_notifyee(&self, subscriber: SubscriberUUri) -> Result<(), Box<dyn Error>> {
             Ok(self
                 .command_sender
                 .send(NotificationEvent::RemoveNotifyee { subscriber })
@@ -88,8 +94,8 @@ mod tests {
 
         async fn state_change(
             &self,
-            subscriber: UUri,
-            topic: UUri,
+            subscriber: SubscriberUUri,
+            topic: TopicUUri,
             status: SubscriptionStatus,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
@@ -106,8 +112,11 @@ mod tests {
             Ok(receive_from.await?)
         }
 
-        async fn get_notification_topics(&self) -> Result<HashMap<UUri, UUri>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<HashMap<UUri, UUri>>();
+        async fn get_notification_topics(
+            &self,
+        ) -> Result<HashMap<SubscriberUUri, TopicUUri>, Box<dyn Error>> {
+            let (respond_to, receive_from) =
+                oneshot::channel::<HashMap<SubscriberUUri, TopicUUri>>();
             self.command_sender
                 .send(NotificationEvent::GetNotificationTopics { respond_to })
                 .await?;
@@ -118,7 +127,7 @@ mod tests {
         #[allow(clippy::mutable_key_type)]
         async fn set_notification_topics(
             &self,
-            notification_topics_replacement: HashMap<UUri, UUri>,
+            notification_topics_replacement: HashMap<SubscriberUUri, TopicUUri>,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             self.command_sender
@@ -169,7 +178,8 @@ mod tests {
         let expected_topic = test_lib::helpers::local_topic1_uri();
 
         #[allow(clippy::mutable_key_type)]
-        let mut notification_topics_replacement: HashMap<UUri, UUri> = HashMap::new();
+        let mut notification_topics_replacement: HashMap<SubscriberUUri, TopicUUri> =
+            HashMap::new();
         notification_topics_replacement.insert(expected_subscriber.clone(), expected_topic.clone());
 
         command_sender
