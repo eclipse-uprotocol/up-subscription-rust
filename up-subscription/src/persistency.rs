@@ -28,6 +28,10 @@ use crate::{
 // Whether to include 'up:' in serialized UUris
 const PERSIST_UP_SCHEMA: bool = true;
 
+// For better code clarity
+type SubscriberAsString = String;
+type SerializedTopicState = u8;
+
 #[allow(dead_code)] // I have no idea why clippy insists on this here - this type is most definitely being used...
 pub(crate) type SubscriptionSet =
     HashMap<TopicUUri, HashMap<SubscriberUUri, Option<ExpiryTimestamp>>>;
@@ -110,7 +114,7 @@ impl SubscriptionsStore {
         Ok(
             if let Some(mut subscriber_list) = self
                 .persistency
-                .get::<HashMap<String, Option<ExpiryTimestamp>>>(topic_string)
+                .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
             {
                 subscriber_list.insert(subscriber_string.clone(), expiry);
                 self.persistency
@@ -151,7 +155,7 @@ impl SubscriptionsStore {
 
         if let Some(mut subscriber_list) = self
             .persistency
-            .get::<HashMap<String, Option<ExpiryTimestamp>>>(topic_string)
+            .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
         {
             subscriber_list.remove(subscriber_string);
 
@@ -189,7 +193,7 @@ impl SubscriptionsStore {
         // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
         if let Some(list) = self
             .persistency
-            .get::<HashMap<String, Option<ExpiryTimestamp>>>(topic_string)
+            .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
         {
             for entry in list.keys() {
                 subscribers.push(UUri::try_from(entry.clone()).map_err(|e| {
@@ -214,7 +218,8 @@ impl SubscriptionsStore {
         let mut result_subs: Vec<TopicUUri> = Vec::new();
 
         for entry in self.persistency.iter() {
-            if let Some(subscribers) = entry.get_value::<HashMap<String, Option<ExpiryTimestamp>>>()
+            if let Some(subscribers) =
+                entry.get_value::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>()
             {
                 if subscribers.contains_key(subscriber_string) {
                     result_subs.push(UUri::try_from(entry.get_key()).map_err(|e| {
@@ -238,7 +243,9 @@ impl SubscriptionsStore {
 
         // Extract every subscription entry that carries an expiration timestamp value
         for topic_subs in self.persistency.iter() {
-            if let Some(entry) = topic_subs.get_value::<HashMap<String, Option<u128>>>() {
+            if let Some(entry) =
+                topic_subs.get_value::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>()
+            {
                 for (subscriber, expiry) in entry.iter() {
                     flattened_subscriptions.push((
                         UUri::try_from(subscriber.clone()).map_err(|e| {
@@ -267,7 +274,7 @@ impl SubscriptionsStore {
         &mut self,
     ) -> Result<Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)>, PersistencyError> {
         // Extract every subscription entry that carries an expiration timestamp value
-        let mut expiring_subscriptions: Vec<(UUri, UUri, u128)> = self
+        let mut expiring_subscriptions: Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)> = self
             .get_flattened_subscriptions()?
             .into_iter()
             .filter_map(|(subscriber, topic, expiry)| expiry.map(|exp| (subscriber, topic, exp)))
@@ -297,7 +304,9 @@ impl SubscriptionsStore {
             #[allow(clippy::mutable_key_type)]
             let mut topic_subscribers = HashMap::new();
 
-            if let Some(list) = entry.get_value::<HashMap<String, Option<ExpiryTimestamp>>>() {
+            if let Some(list) =
+                entry.get_value::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>()
+            {
                 for (subscriber, expiry) in list {
                     topic_subscribers.insert(
                         UUri::try_from(subscriber).map_err(|e| {
@@ -335,7 +344,7 @@ impl SubscriptionsStore {
                     &subscribers
                         .iter()
                         .map(|(u, e)| (u.to_uri(PERSIST_UP_SCHEMA), *e))
-                        .collect::<HashMap<String, Option<ExpiryTimestamp>>>(),
+                        .collect::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(),
                 )
                 .map_err(|e| {
                     PersistencyError::serialization_error(format!(
@@ -376,11 +385,12 @@ impl RemoteTopicsStore {
         let topic_string = &topic.to_uri(Self::PERSIST_UP_SCHEMA);
 
         Ok(if self.persistency.exists(topic_string) {
-            let bytes = self.persistency.get::<Vec<u8>>(topic_string).ok_or(
-                PersistencyError::internal_error(
+            let bytes = self
+                .persistency
+                .get::<Vec<SerializedTopicState>>(topic_string)
+                .ok_or(PersistencyError::internal_error(
                     "Error retrieving remote topic state from persistency",
-                ),
-            )?;
+                ))?;
             Some(deserialize_topic_state(&bytes).map_err(|e| {
                 PersistencyError::serialization_error(format!(
                     "Error deserializing topic state {e}"
@@ -424,11 +434,12 @@ impl RemoteTopicsStore {
 
         // if remote topic already has been registered, retrieve state
         Ok(if self.persistency.exists(topic_string) {
-            let bytes = self.persistency.get::<Vec<u8>>(topic_string).ok_or(
-                PersistencyError::internal_error(
+            let bytes = self
+                .persistency
+                .get::<Vec<SerializedTopicState>>(topic_string)
+                .ok_or(PersistencyError::internal_error(
                     "Error retrieving remote topic state from persistency",
-                ),
-            )?;
+                ))?;
             deserialize_topic_state(&bytes).map_err(|e| {
                 PersistencyError::serialization_error(format!(
                     "Error deserializing topic state {e}"
@@ -447,7 +458,7 @@ impl RemoteTopicsStore {
         let mut map: HashMap<TopicUUri, TopicState> = HashMap::new();
 
         for kv in self.persistency.iter() {
-            if let Some(bytes) = kv.get_value::<Vec<u8>>() {
+            if let Some(bytes) = kv.get_value::<Vec<SerializedTopicState>>() {
                 let value = deserialize_topic_state(&bytes)?;
                 map.insert(UUri::try_from(kv.get_key())?, value);
             }
@@ -536,7 +547,7 @@ impl NotificationStore {
         let mut result = vec![];
 
         for entry in self.persistency.iter() {
-            if let Some(bytes) = entry.get_value::<Vec<u8>>() {
+            if let Some(bytes) = entry.get_value::<Vec<SerializedTopicState>>() {
                 let topic = deserialize_uuri(&bytes).map_err(|e| {
                     PersistencyError::serialization_error(format!(
                         "Error deserializing notification topic {e}"
@@ -556,7 +567,7 @@ impl NotificationStore {
         let mut map: HashMap<SubscriberUUri, TopicUUri> = HashMap::new();
 
         for kv in self.persistency.iter() {
-            if let Some(bytes) = kv.get_value::<Vec<u8>>() {
+            if let Some(bytes) = kv.get_value::<Vec<SerializedTopicState>>() {
                 let value = deserialize_uuri(&bytes)?;
                 map.insert(UUri::try_from(kv.get_key())?, value);
             }
@@ -589,11 +600,15 @@ fn deserialize_uuri(bytes: &[u8]) -> Result<UUri, Box<dyn std::error::Error>> {
     Ok(UUri::parse_from_bytes(bytes)?)
 }
 
-fn serialize_topic_state(state: &TopicState) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn serialize_topic_state(
+    state: &TopicState,
+) -> Result<Vec<SerializedTopicState>, Box<dyn std::error::Error>> {
     Ok(state.value().to_le_bytes().to_vec())
 }
 
-fn deserialize_topic_state(bytes: &[u8]) -> Result<TopicState, Box<dyn std::error::Error>> {
+fn deserialize_topic_state(
+    bytes: &[SerializedTopicState],
+) -> Result<TopicState, Box<dyn std::error::Error>> {
     Ok(
         TopicState::from_i32(i32::from_le_bytes(bytes[..4].try_into()?))
             .ok_or_else(|| serde::de::value::Error::custom("Invalid TopicState value"))?,
