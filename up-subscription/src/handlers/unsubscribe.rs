@@ -45,6 +45,7 @@ impl RequestHandler for UnubscribeRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
+        // [impl->dsn~usubscription-unsubscribe-protobuf~1]
         let (unsubscribe_request, source) = helpers::extract_inputs::<UnsubscribeRequest>(
             RESOURCE_ID_UNSUBSCRIBE,
             resource_id,
@@ -95,6 +96,7 @@ mod tests {
 
     use crate::{helpers, tests::test_lib};
 
+    // [utest->dsn~usubscription-unsubscribe-protobuf~1]
     #[tokio::test]
     async fn test_unsubscribe_success() {
         helpers::init_once();

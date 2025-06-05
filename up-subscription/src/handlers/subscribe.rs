@@ -122,6 +122,7 @@ mod tests {
 
     use crate::{helpers, tests::test_lib};
 
+    // [utest->dsn~usubscription-subscribe-protobuf~1]
     #[tokio::test]
     async fn test_subscribe_success() {
         helpers::init_once();

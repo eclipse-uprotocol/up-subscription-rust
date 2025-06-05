@@ -112,10 +112,12 @@ impl SubscriptionsStore {
         let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
 
         Ok(
+            // [impl->req~usubscription-subscribe-multiple~1]
             if let Some(mut subscriber_list) = self
                 .persistency
                 .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
             {
+                // [impl->req~usubscription-subscribe-expiration-extension~1]
                 subscriber_list.insert(subscriber_string.clone(), expiry);
                 self.persistency
                     .set(topic_string, &subscriber_list)
@@ -182,6 +184,8 @@ impl SubscriptionsStore {
     /// Return a list of all subscribers of given topic
     /// * returns `Vec<SubscriberUUri>` that contains all subscriber UUris registered for the topic
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
+    // [impl->req~usubscription-fetch-subscribers-stable-sorting~1]
+    // [impl->req~usubscription-fetch-subscriptions-stable-sorting~1]
     pub(crate) fn get_topic_subscribers(
         &self,
         topic: &TopicUUri,
@@ -210,6 +214,7 @@ impl SubscriptionsStore {
     /// Return a list of all topics subscribed to by given subscriber
     /// * returns `Vec<TopicUUri>` that contains all topics subscribed to by subscriber
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
+    // [impl->req~usubscription-fetch-subscriptions-stable-sorting~1]
     pub(crate) fn get_subscriber_topics(
         &self,
         subscriber: &SubscriberUUri,
@@ -270,6 +275,7 @@ impl SubscriptionsStore {
     /// This function does two things
     /// - remove any subscription relationships from persistency that have an expiration timestamp that lies in the past
     /// - return all remaining subscription relationships which have an expiration timestamp that has not yet expired
+    // [impl->req~usubscription-subscribe-no-expiration~1]
     pub(crate) fn get_and_prune_expiring_subscriptions(
         &mut self,
     ) -> Result<Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)>, PersistencyError> {
@@ -446,6 +452,7 @@ impl RemoteTopicsStore {
                 ))
             })?
         } else {
+            // [impl->req~usubscription-subscribe-remote-pending~1]
             self.set_topic_state(topic, TopicState::SUBSCRIBE_PENDING)?
         })
     }

@@ -11,6 +11,7 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
+// [utest->dsn~usubscription-state-machine~1]
 #[cfg(test)]
 mod tests {
     use protobuf::MessageFull;
@@ -339,6 +340,8 @@ mod tests {
         }
     }
 
+    // [utest->req~usubscription-subscribe~1]
+    // [utest->req~usubscription-subscribe-multiple~1]
     #[test_case(vec![(UUri::default(), UUri::default())]; "Default susbcriber-topic")]
     #[test_case(vec![(UUri::default(), UUri::default()), (UUri::default(), UUri::default())]; "Multiple default susbcriber-topic")]
     #[test_case(vec![(test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1())]; "One susbcriber-topic")]
@@ -383,6 +386,8 @@ mod tests {
         assert_eq!(topic_subscribers, desired_state);
     }
 
+    // [utest->req~usubscription-subscribe-expiration~1]
+    // [utest->req~usubscription-subscribe-no-expiration~1]
     #[tokio::test]
     async fn test_subscribe_with_expiry() {
         helpers::init_once();
@@ -446,6 +451,9 @@ mod tests {
         }
     }
 
+    // [utest->req~usubscription-subscribe-remote~1]
+    // [utest->req~usubscription-subscribe-remote-pending~1]
+    // [utest->req~usubscription-subscribe-remote-response~1]
     #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBE_PENDING; "Remote topic, remote state SUBSCRIBED_PENDING")]
     #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBED; "Remote topic, remote state SUBSCRIBED")]
     #[tokio::test]
@@ -511,6 +519,8 @@ mod tests {
         );
     }
 
+    // [utest->req~usubscription-subscribe-remote~1]
+    // [utest->req~usubscription-unsubscribe-last-remote~1]
     #[tokio::test]
     async fn test_repeated_remote_subscribe() {
         helpers::init_once();
@@ -555,7 +565,7 @@ mod tests {
             .await;
         assert!(result.is_ok());
 
-        // Assert we have to local topic-subscriber entries...
+        // Assert we have two local topic-subscriber entries...
         let topic_subscribers = command_sender.get_topic_subscribers().await;
         assert!(topic_subscribers.is_ok());
         #[allow(clippy::mutable_key_type)]
@@ -573,6 +583,7 @@ mod tests {
     }
 
     // All subscribers for a topic unsubscribe
+    // [utest->req~usubscription-unsubscribe~1]
     #[tokio::test]
     async fn test_final_unsubscribe() {
         helpers::init_once();
@@ -667,6 +678,7 @@ mod tests {
     }
 
     // All subscribers for a remote topic unsubscribe
+    // [utest->req~usubscription-unsubscribe-last-remote~1]
     #[tokio::test]
     async fn test_final_remote_unsubscribe() {
         helpers::init_once();
@@ -745,6 +757,8 @@ mod tests {
     }
 
     // Some subscribers for a remote topic unsubscribe, but at least one subscriber is left
+    // [utest->req~usubscription-unsubscribe-last-remote~1]
+    // [utest->req~usubscription-unsubscribe-remote-unsubscribed~1]
     #[tokio::test]
     async fn test_partial_remote_unsubscribe() {
         helpers::init_once();
@@ -810,6 +824,7 @@ mod tests {
         assert_eq!(*state, State::SUBSCRIBED);
     }
 
+    // [utest->req~usubscription-subscribe-notifications~1]
     #[tokio::test]
     async fn test_local_subscribe_notification() {
         helpers::init_once();
@@ -883,6 +898,7 @@ mod tests {
         let _ = state_changed.await;
     }
 
+    // [utest->req~usubscription-subscribe-notifications~1]
     #[tokio::test]
     async fn test_remote_subscribe_notification() {
         helpers::init_once();
@@ -921,6 +937,9 @@ mod tests {
         let _ = state_changed.await;
     }
 
+    // [utest->req~usubscription-fetch-subscribers~1]
+    // [utest->req~usubscription-fetch-subscribers-has-more-records~1]
+    // [utest->req~usubscription-fetch-subscribers-offset~1]
     #[test_case(None; "No offset")]
     #[test_case(Some(0); "Offset 0")]
     #[test_case(Some(1); "Offset 1")]
@@ -975,6 +994,9 @@ mod tests {
         }
     }
 
+    // [utest->req~usubscription-fetch-subscriptions-by-subscriber~1]
+    // [utest->req~usubscription-fetch-subscriptions-has-more-records~1]
+    // [utest->req~usubscription-fetch-subscriptions-offset~1]
     #[test_case(None; "No offset")]
     #[test_case(Some(0); "Offset 0")]
     #[test_case(Some(1); "Offset 1")]
@@ -1039,6 +1061,9 @@ mod tests {
         }
     }
 
+    // [utest->req~usubscription-fetch-subscriptions-by-topic~1]
+    // [utest->req~usubscription-fetch-subscriptions-has-more-records~1]
+    // [utest->req~usubscription-fetch-subscriptions-offset~1]
     #[test_case(None; "No offset")]
     #[test_case(Some(0); "Offset 0")]
     #[test_case(Some(1); "Offset 1")]

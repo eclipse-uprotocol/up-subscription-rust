@@ -202,7 +202,8 @@ mod tests {
         assert_eq!(notification_topics.len(), 0);
     }
 
-    // This test expects a state change notification to be send to the generic Notification Update channel
+    // [utest->dsn~usubscription-change-notification-type~1]
+    // [utest->dsn~usubscription-change-notification-topic~1]
     #[tokio::test]
     async fn test_state_change() {
         helpers::init_once();
@@ -225,6 +226,7 @@ mod tests {
         };
 
         // this is the generic update channel notification, that always is sent
+        // [utest->dsn~usubscription-change-notification-topic~1]
         let expected_message_general_channel =
             UMessageBuilder::publish(usubscription_uri(RESOURCE_ID_SUBSCRIPTION_CHANGE))
                 .with_message_id(UUID::build())

@@ -145,6 +145,8 @@ enum Event {
 
 // Core business logic of subscription management - includes container data types for tracking subscriptions and remote subscriptions.
 // Interfacing with this purely works via channels, so we do not have to deal with mutexes and similar concepts.
+// [impl->req~usubscription-unsubscribe-notifications~1]
+// [impl->dsn~usubscription-state-machine~1]
 pub(crate) async fn handle_message(
     configuration: Arc<USubscriptionConfiguration>,
     transport: Arc<dyn UTransport>,
@@ -165,6 +167,8 @@ pub(crate) async fn handle_message(
         mpsc::channel::<InternalSubscriptionEvent>(INTERNAL_COMMAND_BUFFER_SIZE);
 
     // At startup, set up timed unsubscribe for any persisted subscriptions that define an expiration timestamp
+    // [impl->req~usubscription-subscribe-expiration~1]
+    // [impl->req~usubscription-subscribe-no-expiration~1]
     match subscriptions.get_and_prune_expiring_subscriptions() {
         Ok(list) => {
             for (subscriber, topic, expiry_millis) in list {
@@ -210,6 +214,7 @@ pub(crate) async fn handle_message(
                     expiry,
                     respond_to,
                 } => {
+                    // [impl->req~usubscription-subscribe~1]
                     match add_subscription(
                         configuration.clone(),
                         transport.clone(),
@@ -220,6 +225,7 @@ pub(crate) async fn handle_message(
                         topic.clone(),
                         expiry,
                     ) {
+                        // [impl->req~usubscription-subscribe-notifications~1]
                         Ok(result) => {
                             // Send topic state change notification
                             notification_manager::notify(
@@ -244,6 +250,7 @@ pub(crate) async fn handle_message(
                     topic,
                     respond_to,
                 } => {
+                    // [impl->req~usubscription-unsubscribe~1]
                     match remove_subscription(
                         configuration.clone(),
                         transport.clone(),
@@ -277,6 +284,7 @@ pub(crate) async fn handle_message(
                     offset,
                     respond_to,
                 } => match fetch_subscribers(&subscriptions, topic, offset) {
+                    // [impl->req~usubscription-fetch-subscribers~1]
                     Ok(result) => {
                         if respond_to.send(result).is_err() {
                             error!("Problem with internal communication");
@@ -422,10 +430,13 @@ fn add_subscription(
     let _ = topic_subscribers.add_subscription(&subscriber, &topic, expiry)?;
 
     // For REMOTE topics, we explicitly track state due to _PENDING scenarios
+    // [impl->req~usubscription-subscribe-multiple~1]
     let state = if topic.is_remote_authority(&uri_provider.get_authority()) {
         let state = remote_topics.add_topic_or_get_state(&topic)?;
 
         // if this remote topic is not yet SUBSCRIBED, perform remote subscription
+        // [impl->req~usubscription-subscribe-remote~1]
+        // [impl->req~usubscription-subscribe-unsubscribe-pending~1]
         if state != TopicState::SUBSCRIBED {
             let topic_clone = topic.clone();
             let internal_cmd_sender_clone = internal_cmd_sender.clone();
@@ -447,6 +458,8 @@ fn add_subscription(
     };
 
     // Set up timed unsubscribe in case expiration timestamp is set
+    // [impl->req~usubscription-subscribe-expiration~1]
+    // [impl->req~usubscription-subscribe-no-expiration~1]
     if let Some(expiry_millis) = expiry {
         schedule_unsubscribe(
             expiry_millis,
@@ -473,6 +486,8 @@ fn remove_subscription(
     topic: TopicUUri,
 ) -> Result<SubscriptionStatus, persistency::PersistencyError> {
     // if this was the last subscriber to topic and topic is remote
+    // [impl->req~usubscription-unsubscribe-last-remote~1]
+    // [impl->req~usubscription-unsubscribe-subscribe-pending~1]
     if topic_subscribers.remove_subscription(&subscriber, &topic)?
         && topic.is_remote_authority(&uri_provider.get_authority())
     {
@@ -486,6 +501,8 @@ fn remove_subscription(
         });
     }
 
+    // [impl->req~usubscription-unsubscribe-multiple~1]
+    // [impl->req~usubscription-unsubscribe-remote-unsubscribed~1]
     Ok(SubscriptionStatus {
         // Whatever happens with the remote topic state - as far as the local client is concerned, it has now UNSUBSCRIBED from this topic
         state: TopicState::UNSUBSCRIBED.into(),
@@ -503,11 +520,13 @@ fn fetch_subscribers(
     // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
     let mut subscribers = topic_subscribers.get_topic_subscribers(&topic)?;
 
+    // [impl->req~usubscription-fetch-subscribers-offset~1]
     if let Some(offset) = offset {
         subscribers.drain(..offset as usize);
     }
 
     // split up result list, to make sense of has_more_records field
+    // [impl->req~usubscription-fetch-subscribers-has-more-records~1]
     let has_more = if subscribers.len() > UP_MAX_FETCH_SUBSCRIBERS_LEN {
         subscribers.truncate(UP_MAX_FETCH_SUBSCRIBERS_LEN);
         true
@@ -526,6 +545,7 @@ fn fetch_subscriptions(
     offset: Option<u32>,
 ) -> Result<SubscriptionsResponse, persistency::PersistencyError> {
     let mut results: Vec<SubscriptionEntry> = match request {
+        // [impl->req~usubscription-fetch-subscriptions-by-subscriber~1]
         RequestKind::Subscriber(subscriber) => topic_subscribers
             .get_subscriber_topics(&subscriber)?
             .iter()
@@ -543,6 +563,7 @@ fn fetch_subscriptions(
             })
             .collect(),
 
+        // [impl->req~usubscription-fetch-subscriptions-by-topic~1]
         RequestKind::Topic(topic) => topic_subscribers
             .get_topic_subscribers(&topic)?
             .iter()
@@ -561,11 +582,13 @@ fn fetch_subscriptions(
             .collect(),
     };
 
+    // [impl->req~usubscription-fetch-subscriptions-offset~1]
     if let Some(offset) = offset {
         results.drain(..offset as usize);
     }
 
     // split up result list, to make sense of has_more_records field
+    // [impl->req~usubscription-fetch-subscriptions-has-more-records~1]
     let mut has_more = false;
     if results.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
         results.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
@@ -582,6 +605,7 @@ async fn remote_subscribe(
     transport: Arc<dyn UTransport>,
     internal_cmd_sender: Sender<InternalSubscriptionEvent>,
 ) -> Result<(), UStatus> {
+    // [impl->dsn~usubscription-subscribe-remote-subscriber-change~1]
     let rpc_client: Arc<dyn RpcClient> = Arc::new(
         InMemoryRpcClient::new(transport, uri_provider)
             .await
@@ -595,6 +619,7 @@ async fn remote_subscribe(
     };
 
     // send request
+    // [impl->req~usubscription-remote-max-timeout~1]
     let subscription_response: SubscriptionResponse = rpc_client
         .invoke_proto_method(
             make_remote_subscribe_uuri(&subscription_request.topic),
@@ -610,6 +635,7 @@ async fn remote_subscribe(
         })?;
 
     // deal with response
+    // [impl->req~usubscription-subscribe-remote-response~1]
     if subscription_response.is_state(TopicState::SUBSCRIBED) {
         debug!("Got remote subscription response, state SUBSCRIBED");
 
@@ -634,6 +660,7 @@ async fn remote_unsubscribe(
     internal_cmd_sender: Sender<InternalSubscriptionEvent>,
 ) -> Result<(), UStatus> {
     let rpc_client: Arc<dyn RpcClient> = Arc::new(
+        // [impl->dsn~usubscription-unsubscribe-remote-subscriber-change~1]
         InMemoryRpcClient::new(transport, uri_provider)
             .await
             .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?,
@@ -751,6 +778,7 @@ mod tests {
         mock_provider
     }
 
+    // [utest->req~usubscription-subscribe-expiration~1]
     #[tokio::test]
     async fn test_schedule_future_unsubscribe() {
         let (internal_cmd_sender, mut internal_cmd_receiver) =
@@ -786,6 +814,7 @@ mod tests {
         }
     }
 
+    // [utest->req~usubscription-subscribe-expiration~1]
     #[tokio::test]
     async fn test_schedule_past_unsubscribe() {
         let (internal_cmd_sender, mut internal_cmd_receiver) =

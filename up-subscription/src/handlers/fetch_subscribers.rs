@@ -49,6 +49,7 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
+        // [impl->dsn~usubscription-fetch-subscribers-protobuf~1]
         let (fetch_subscribers_request, _source) =
             helpers::extract_inputs::<FetchSubscribersRequest>(
                 RESOURCE_ID_FETCH_SUBSCRIBERS,
@@ -114,6 +115,7 @@ mod tests {
 
     use crate::{helpers, tests::test_lib};
 
+    // [utest->dsn~usubscription-fetch-subscribers-protobuf~1]
     #[tokio::test]
     async fn test_subscribe_success() {
         helpers::init_once();

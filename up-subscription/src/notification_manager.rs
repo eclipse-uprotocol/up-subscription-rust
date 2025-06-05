@@ -118,6 +118,7 @@ pub(crate) async fn notification_engine(
                 status,
                 respond_to,
             } => {
+                // [impl->dsn~usubscription-change-notification-type~1]
                 let update = Update {
                     topic: Some(topic).into(),
                     subscriber: Some(SubscriberInfo {
@@ -131,6 +132,7 @@ pub(crate) async fn notification_engine(
 
                 // Send Update message to general notification channel
                 // as per usubscription.proto RegisterForNotifications(NotificationsRequest)
+                // [impl->dsn~usubscription-change-notification-topic~1]
                 match UMessageBuilder::publish(usubscription_uri(RESOURCE_ID_SUBSCRIPTION_CHANGE))
                     .with_message_id(UUID::build())
                     .build_with_protobuf_payload(&update)
@@ -139,6 +141,7 @@ pub(crate) async fn notification_engine(
                         error!("Error building global update notification message: {e}");
                     }
                     Ok(update_msg) => {
+                        // [impl->dsn~usubscription-change-notification-topic~1]
                         if let Err(e) = up_transport.send(update_msg).await {
                             error!(
                                 "Error sending global subscription-change update notification: {e}"
@@ -148,6 +151,7 @@ pub(crate) async fn notification_engine(
                 }
 
                 // Send Update message to any dedicated registered notification-subscribers
+                // [impl->req~usubscription-register-notifications~1]
                 if let Ok(topics) = notifications.get_topics() {
                     for topic_entry in topics {
                         debug!(

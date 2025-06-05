@@ -45,6 +45,7 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
+        // [impl->dsn~usubscription-unregister-notifications-protobuf~1]
         let (_subscription_request, source) = helpers::extract_inputs::<NotificationsRequest>(
             RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
             resource_id,
@@ -81,6 +82,7 @@ mod tests {
 
     use crate::{helpers, tests::test_lib};
 
+    // [utest->dsn~usubscription-unregister-notifications-protobuf~1]
     #[tokio::test]
     async fn test_unregister_notification_success() {
         helpers::init_once();

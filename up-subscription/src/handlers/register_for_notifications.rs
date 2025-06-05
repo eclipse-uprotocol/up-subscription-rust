@@ -45,6 +45,7 @@ impl RequestHandler for RegisterNotificationsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
+        // [impl->dsn~usubscription-register-notifications-protobuf~1]
         let (register_for_notifications_request, source) =
             helpers::extract_inputs::<NotificationsRequest>(
                 RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
@@ -87,6 +88,7 @@ mod tests {
 
     use crate::{helpers, tests::test_lib};
 
+    // [utest->dsn~usubscription-register-notifications-protobuf~1]
     #[tokio::test]
     async fn test_register_notification_success() {
         helpers::init_once();
