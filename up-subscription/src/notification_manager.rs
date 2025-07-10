@@ -64,6 +64,43 @@ pub(crate) enum NotificationEvent {
     },
 }
 
+impl PartialEq for NotificationEvent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                NotificationEvent::StateChange {
+                    subscriber: s1,
+                    topic: t1,
+                    status: st1,
+                    ..
+                },
+                NotificationEvent::StateChange {
+                    subscriber: s2,
+                    topic: t2,
+                    status: st2,
+                    ..
+                },
+            ) => s1 == s2 && t1 == t2 && st1 == st2,
+            (
+                NotificationEvent::AddNotifyee {
+                    subscriber: s1,
+                    topic: t1,
+                },
+                NotificationEvent::AddNotifyee {
+                    subscriber: s2,
+                    topic: t2,
+                },
+            ) => s1 == s2 && t1 == t2,
+            (
+                NotificationEvent::RemoveNotifyee { subscriber: s1 },
+                NotificationEvent::RemoveNotifyee { subscriber: s2 },
+            ) => s1 == s2,
+            // Don't care about the test-only variants
+            _ => false,
+        }
+    }
+}
+
 // Keeps track of and sends subscription update notification to all registered update-notification channels.
 // Interfacing with this purely works via channels.
 pub(crate) async fn notification_engine(
@@ -186,7 +223,7 @@ pub(crate) async fn notification_engine(
                     }
                 }
 
-                let _r = respond_to.send(());
+                let _ = respond_to.send(());
             }
             #[cfg(test)]
             NotificationEvent::GetNotificationTopics { respond_to } => {

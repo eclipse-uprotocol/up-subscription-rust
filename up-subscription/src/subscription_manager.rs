@@ -226,6 +226,7 @@ pub(crate) async fn handle_message(
                         expiry,
                     ) {
                         // [impl->req~usubscription-subscribe-notifications~1]
+                        // [impl->dsn~usubscription-change-notification-update~1]
                         Ok(result) => {
                             // Send topic state change notification
                             notification_manager::notify(
@@ -262,6 +263,7 @@ pub(crate) async fn handle_message(
                     ) {
                         Ok(result) => {
                             // Send topic state change notification
+                            // [impl->dsn~usubscription-change-notification-update~1]
                             notification_manager::notify(
                                 notification_sender.clone(),
                                 Some(subscriber),
@@ -364,20 +366,44 @@ pub(crate) async fn handle_message(
                 InternalSubscriptionEvent::TopicStateUpdate { topic, state } => {
                     match remote_topics.set_topic_state(&topic, state) {
                         Ok(_) => {
-                            // Set up timed unsubscription here, in case state changes to ::PENDING
+                            // We're supposed to send topic change notifications to any subscribers of topic
+                            // [impl->dsn~usubscription-change-notification-update~1]
+                            if let Ok(subscribers) = subscriptions.get_topic_subscribers(&topic) {
+                                let topic_clone = topic.clone();
+                                let notification_sender_clone = notification_sender.clone();
+                                // Want to do this out off the main control flow
+                                helpers::spawn_and_log_error(async move {
+                                    for subscriber in subscribers {
+                                        notification_manager::notify(
+                                            notification_sender_clone.clone(),
+                                            Some(subscriber),
+                                            topic_clone.clone(),
+                                            SubscriptionStatus {
+                                                state: state.into(),
+                                                ..Default::default()
+                                            },
+                                        )
+                                        .await;
+                                    }
+                                    Ok(())
+                                });
+                            } else {
+                                warn!("Failed to send topic state change update notification to topic subscribers");
+                            }
 
                             // Send topic state change notification - in the case of remote subscriptions,
                             // the subscriber is usubscription service itself, so leave that field empty.
-                            notification_manager::notify(
-                                notification_sender.clone(),
-                                None,
-                                topic,
-                                SubscriptionStatus {
-                                    state: state.into(),
-                                    ..Default::default()
-                                },
-                            )
-                            .await;
+                            // TODO: Let's see if this is actually covered by a requirement - otherwise it should go
+                            // notification_manager::notify(
+                            //     notification_sender.clone(),
+                            //     None,
+                            //     topic,
+                            //     SubscriptionStatus {
+                            //         state: state.into(),
+                            //         ..Default::default()
+                            //     },
+                            // )
+                            // .await;
                         }
                         Err(e) => {
                             panic!("Persistency failure {e}");
@@ -397,6 +423,7 @@ pub(crate) async fn handle_message(
                     ) {
                         Ok(result) => {
                             // Send topic state change notification
+                            // [impl->dsn~usubscription-change-notification-update~1]
                             notification_manager::notify(
                                 notification_sender.clone(),
                                 Some(subscriber),
