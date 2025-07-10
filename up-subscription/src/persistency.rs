@@ -61,8 +61,8 @@ impl PersistencyError {
 impl std::fmt::Display for PersistencyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::SerializationError(e) => f.write_fmt(format_args!("Serialization error: {}", e)),
-            Self::InternalError(e) => f.write_fmt(format_args!("Internal error: {}", e)),
+            Self::SerializationError(e) => f.write_fmt(format_args!("Serialization error: {e}")),
+            Self::InternalError(e) => f.write_fmt(format_args!("Internal error: {e}")),
         }
     }
 }

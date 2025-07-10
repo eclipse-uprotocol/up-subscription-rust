@@ -157,7 +157,7 @@ mod tests {
                                     let _ = respond_to.send(());
                                 }
                             } else {
-                                panic!("Received unexpected notification event: {:?}", event);
+                                panic!("Received unexpected notification event: {event:?}");
                             }
                         },
                         _ = shutdown_notification_cloned.notified() => {

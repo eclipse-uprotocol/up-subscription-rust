@@ -36,7 +36,7 @@ where
 {
     task::spawn(async move {
         if let Err(e) = fut.await {
-            error!("{}", e)
+            error!("{e}")
         }
     })
 }
@@ -53,8 +53,7 @@ where
 {
     if resource_id != expected_resource_id {
         return Err(ServiceInvocationError::InvalidArgument(format!(
-            "Wrong resource ID (expected {}, got {})",
-            expected_resource_id, resource_id
+            "Wrong resource ID (expected {expected_resource_id}, got {resource_id})"
         )));
     }
     let Some(payload) = payload else {

@@ -86,13 +86,10 @@ impl USubscriptionConfiguration {
         let persistency_path = if let Some(path_string) = persistency_path {
             let p = Path::new(&path_string);
             p.try_exists().unwrap_or_else(|_| {
-                panic!("Persistency storage path does not exist {}", path_string)
+                panic!("Persistency storage path does not exist {path_string}")
             });
             if !p.is_dir() {
-                panic!(
-                    "Persistency storage path is not a directory {}",
-                    path_string
-                );
+                panic!("Persistency storage path is not a directory {path_string}");
             }
             p.to_path_buf()
         } else {

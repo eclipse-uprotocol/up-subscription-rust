@@ -726,7 +726,7 @@ async fn remote_unsubscribe(
                 .await;
         }
         code => {
-            debug!("Got {:?} remote unsubscribe response", code);
+            debug!("Got {code:?} remote unsubscribe response");
             return Err(UStatus::fail_with_code(
                 code,
                 "Error during remote unsubscribe",

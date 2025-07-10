@@ -127,7 +127,7 @@ pub(crate) mod mocks {
                             .map_err(|e| {
                                 UStatus::fail_with_code(
                                     up_rust::UCode::INTERNAL,
-                                    format!("Error building response: {}", e),
+                                    format!("Error building response: {e}"),
                                 )
                             })
                             .unwrap();
