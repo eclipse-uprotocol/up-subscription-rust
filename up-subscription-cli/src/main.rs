@@ -58,7 +58,7 @@ impl StartupError {
 impl std::fmt::Display for StartupError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConfigurationError(e) => f.write_fmt(format_args!("Configuration error: {}", e)),
+            Self::ConfigurationError(e) => f.write_fmt(format_args!("Configuration error: {e}")),
         }
     }
 }
@@ -193,7 +193,7 @@ async fn main() {
             Ok(_) => {
                 debug!("Success, running daemonized");
             }
-            Err(e) => error!("Error, {}", e),
+            Err(e) => error!("Error, {e}"),
         }
     }
 
