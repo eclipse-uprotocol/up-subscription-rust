@@ -160,9 +160,9 @@ pub(crate) mod helpers {
     pub(crate) const LOCAL_AUTHORITY: &str = "LOCAL";
     pub(crate) const REMOTE_AUTHORITY: &str = "REMOTE";
 
-    const SUBSCRIBER1_ID: u32 = 0x0000_1000;
-    const SUBSCRIBER1_VERSION: u8 = 0x01;
-    const SUBSCRIBER1_RESOURCE: u16 = 0x1000;
+    pub(crate) const SUBSCRIBER1_ID: u32 = 0x0000_1000;
+    pub(crate) const SUBSCRIBER1_VERSION: u8 = 0x01;
+    pub(crate) const SUBSCRIBER1_RESOURCE: u16 = 0x1000;
 
     const SUBSCRIBER2_ID: u32 = 0x0000_2000;
     const SUBSCRIBER2_VERSION: u8 = 0x01;
@@ -179,9 +179,9 @@ pub(crate) mod helpers {
     #[allow(dead_code)] // final decision on removing this to happen after functional spec alignment is complete
     const NOTIFICATION_TOPIC_RESOURCE: u16 = 0x8001;
 
-    const TOPIC_LOCAL1_ID: u32 = 0x0010_0000;
-    const TOPIC_LOCAL1_VERSION: u8 = 0x01;
-    const TOPIC_LOCAL1_RESOURCE: u16 = 0x8AC7;
+    pub(crate) const TOPIC_LOCAL1_ID: u32 = 0x0010_0000;
+    pub(crate) const TOPIC_LOCAL1_VERSION: u8 = 0x01;
+    pub(crate) const TOPIC_LOCAL1_RESOURCE: u16 = 0x8AC7;
 
     const TOPIC_LOCAL2_ID: u32 = 0x0020_0000;
     const TOPIC_LOCAL2_VERSION: u8 = 0x01;

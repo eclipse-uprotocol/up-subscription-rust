@@ -89,3 +89,31 @@ pub(crate) fn duration_until_timestamp(future_timestamp_millis: u128) -> Option<
         None // Timestamp is in the past
     }
 }
+
+// Validate that a topic URI
+//  * is a valid uProtocol URI and
+//  * does not contain a _wildcard_ authority and
+//  * does not contain a _wildcard_ uEntity instance (`ue_id`) and
+//  * does not contain a _wildcard_ resource ID
+pub(crate) fn validate_uri(topic: &UUri) -> Result<(), ServiceInvocationError> {
+    topic
+        .check_validity()
+        .map_err(|e| ServiceInvocationError::InvalidArgument(format!("Invalid topic URI {e}")))?;
+    if topic.has_wildcard_authority() {
+        return Err(ServiceInvocationError::InvalidArgument(
+            "Topic URI with wildcard authority".to_string(),
+        ));
+    };
+    if topic.has_wildcard_entity_instance() {
+        return Err(ServiceInvocationError::InvalidArgument(
+            "Topic URI with wildcard entity instance".to_string(),
+        ));
+    };
+    if topic.has_wildcard_resource_id() {
+        return Err(ServiceInvocationError::InvalidArgument(
+            "Topic URI with wildcard resource id".to_string(),
+        ));
+    };
+
+    Ok(())
+}

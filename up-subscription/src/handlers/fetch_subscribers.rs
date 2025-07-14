@@ -64,6 +64,10 @@ impl RequestHandler for FetchSubscribersRequestHandler {
             ));
         };
 
+        // topic input validation
+        // [impl->dsn~usubscription-fetch-subscribers-invalid-topic~1]
+        helpers::validate_uri(&topic)?;
+
         // Interact with subscription manager backend
         let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
         let se = SubscriptionEvent::FetchSubscribers {
@@ -111,7 +115,10 @@ impl RequestHandler for FetchSubscribersRequestHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
     use tokio::sync::mpsc::{self};
+
+    use up_rust::UUri;
 
     use crate::{helpers, tests::test_lib};
 
@@ -123,7 +130,6 @@ mod tests {
         // create request and other required object(s)
         let fetch_subscribers_request = FetchSubscribersRequest {
             topic: Some(test_lib::helpers::local_topic1_uri()).into(),
-            offset: Some(42),
             ..Default::default()
         };
         let request_payload =
@@ -156,13 +162,9 @@ mod tests {
         let subscription_event = subscription_receiver.recv().await.unwrap();
         match subscription_event {
             SubscriptionEvent::FetchSubscribers {
-                topic,
-                offset,
-                respond_to,
+                topic, respond_to, ..
             } => {
                 assert_eq!(topic, test_lib::helpers::local_topic1_uri());
-                assert_eq!(offset, Some(42));
-
                 let _ = respond_to.send(SubscribersResponse::default());
             }
             _ => panic!("Wrong event type"),
@@ -277,6 +279,60 @@ mod tests {
         let result = request_handler
             .handle_request(
                 RESOURCE_ID_FETCH_SUBSCRIBERS,
+                &message_attributes,
+                Some(request_payload),
+            )
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ServiceInvocationError::InvalidArgument(_) => {}
+            _ => panic!("Wrong error type"),
+        }
+    }
+
+    // [utest->dsn~usubscription-fetch-subscribers-invalid-topic~1]
+    #[test_case(UUri::default(); "Bad topic UUri")]
+    #[test_case(UUri {
+            authority_name: String::from("*"),
+            ue_id: test_lib::helpers::TOPIC_LOCAL1_ID,
+            ue_version_major: test_lib::helpers::TOPIC_LOCAL1_VERSION as u32,
+            resource_id: test_lib::helpers::TOPIC_LOCAL1_RESOURCE as u32,
+            ..Default::default()
+        }; "Wildcard authority in topic UUri")]
+    #[test_case(UUri {
+            authority_name: test_lib::helpers::LOCAL_AUTHORITY.into(),
+            ue_id: 0xFFFF_0000,
+            ue_version_major: test_lib::helpers::TOPIC_LOCAL1_VERSION as u32,
+            resource_id: test_lib::helpers::TOPIC_LOCAL1_RESOURCE as u32,
+            ..Default::default()
+        }; "Wildcard entity id in topic UUri")]
+    #[test_case(UUri {
+            authority_name: test_lib::helpers::LOCAL_AUTHORITY.into(),
+            ue_id: test_lib::helpers::TOPIC_LOCAL1_ID,
+            ue_version_major: test_lib::helpers::TOPIC_LOCAL1_VERSION as u32,
+            resource_id: 0x0000_FFFF,
+            ..Default::default()
+        }; "Wildcard resource id in topic UUri")]
+    #[tokio::test]
+    async fn test_invalid_topic_uri(topic: UUri) {
+        helpers::init_once();
+
+        // create request and other required object(s)
+        let subscribe_request = test_lib::helpers::subscription_request(topic, None);
+        let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+        let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
+
+        // create handler and perform tested operation
+        let request_handler = FetchSubscribersRequestHandler::new(subscription_sender);
+
+        let result = request_handler
+            .handle_request(
+                up_rust::core::usubscription::RESOURCE_ID_FETCH_SUBSCRIBERS,
                 &message_attributes,
                 Some(request_payload),
             )
