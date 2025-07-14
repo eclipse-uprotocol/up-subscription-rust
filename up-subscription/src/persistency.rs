@@ -184,8 +184,6 @@ impl SubscriptionsStore {
     /// Return a list of all subscribers of given topic
     /// * returns `Vec<SubscriberUUri>` that contains all subscriber UUris registered for the topic
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
-    // [impl->req~usubscription-fetch-subscribers-stable-sorting~1]
-    // [impl->req~usubscription-fetch-subscriptions-stable-sorting~1]
     pub(crate) fn get_topic_subscribers(
         &self,
         topic: &TopicUUri,
@@ -214,7 +212,6 @@ impl SubscriptionsStore {
     /// Return a list of all topics subscribed to by given subscriber
     /// * returns `Vec<TopicUUri>` that contains all topics subscribed to by subscriber
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
-    // [impl->req~usubscription-fetch-subscriptions-stable-sorting~1]
     pub(crate) fn get_subscriber_topics(
         &self,
         subscriber: &SubscriberUUri,

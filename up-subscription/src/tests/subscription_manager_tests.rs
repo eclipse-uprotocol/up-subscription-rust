@@ -36,8 +36,8 @@ mod tests {
         notification_manager::NotificationEvent,
         persistency,
         subscription_manager::{
-            handle_message, InternalSubscriptionEvent, RequestKind, SubscribersResponse,
-            SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
+            handle_message, InternalSubscriptionEvent, RequestKind, SubscriptionEntry,
+            SubscriptionEvent,
         },
         test_lib,
         usubscription::{ExpiryTimestamp, SubscriberUUri, TopicUUri},
@@ -277,14 +277,9 @@ mod tests {
         async fn fetch_subscribers(
             &self,
             topic: TopicUUri,
-            offset: Option<u32>,
-        ) -> Result<SubscribersResponse, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
-            let command = SubscriptionEvent::FetchSubscribers {
-                topic,
-                offset,
-                respond_to,
-            };
+        ) -> Result<Vec<SubscriberUUri>, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriberUUri>>();
+            let command = SubscriptionEvent::FetchSubscribers { topic, respond_to };
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
         }
@@ -292,12 +287,10 @@ mod tests {
         async fn fetch_subscriptions(
             &self,
             request: RequestKind,
-            offset: Option<u32>,
-        ) -> Result<SubscriptionsResponse, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<SubscriptionsResponse>();
+        ) -> Result<Vec<SubscriptionEntry>, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriptionEntry>>();
             let command = SubscriptionEvent::FetchSubscriptions {
                 request,
-                offset,
                 respond_to,
             };
             self.command_sender.send(command).await?;
@@ -1020,14 +1013,8 @@ mod tests {
     }
 
     // [utest->req~usubscription-fetch-subscribers~1]
-    // [utest->req~usubscription-fetch-subscribers-has-more-records~1]
-    // [utest->req~usubscription-fetch-subscribers-offset~1]
-    #[test_case(None; "No offset")]
-    #[test_case(Some(0); "Offset 0")]
-    #[test_case(Some(1); "Offset 1")]
-    #[test_case(Some(2); "Offset 2")]
     #[tokio::test]
-    async fn test_fetch_subscribers(offset: Option<u32>) {
+    async fn test_fetch_subscribers() {
         helpers::init_once();
         let command_sender = CommandSender::new();
 
@@ -1058,16 +1045,13 @@ mod tests {
 
         // Operation to test
         let result = command_sender
-            .fetch_subscribers(desired_topic.clone(), offset)
+            .fetch_subscribers(desired_topic.clone())
             .await;
         assert!(result.is_ok());
 
         // Verify operation result
-        let (fetch_subscribers_response, _has_more) = result.unwrap();
-        assert_eq!(
-            fetch_subscribers_response.len(),
-            2 - (offset.unwrap_or(0) as usize)
-        );
+        let fetch_subscribers_response = result.unwrap();
+        assert_eq!(fetch_subscribers_response.len(), 2);
 
         for subscriber in fetch_subscribers_response {
             #[allow(clippy::mutable_key_type)]
@@ -1077,14 +1061,8 @@ mod tests {
     }
 
     // [utest->req~usubscription-fetch-subscriptions-by-subscriber~1]
-    // [utest->req~usubscription-fetch-subscriptions-has-more-records~1]
-    // [utest->req~usubscription-fetch-subscriptions-offset~1]
-    #[test_case(None; "No offset")]
-    #[test_case(Some(0); "Offset 0")]
-    #[test_case(Some(1); "Offset 1")]
-    #[test_case(Some(2); "Offset 2")]
     #[tokio::test]
-    async fn test_fetch_subscriptions_by_subscriber(offset: Option<u32>) {
+    async fn test_fetch_subscriptions_by_subscriber() {
         helpers::init_once();
         let command_sender = CommandSender::new();
 
@@ -1125,16 +1103,16 @@ mod tests {
 
         // Operation to test
         let result = command_sender
-            .fetch_subscriptions(RequestKind::Subscriber(desired_subscriber.clone()), offset)
+            .fetch_subscriptions(RequestKind::Subscriber(desired_subscriber.clone()))
             .await;
         assert!(result.is_ok());
 
         // Verify operation result
-        let (fetch_subscriptions_response, _has_more) = result.unwrap();
+        let fetch_subscriptions_response = result.unwrap();
 
         assert_eq!(
             fetch_subscriptions_response.len(),
-            expected_subscribers.len() - (offset.unwrap_or(0) as usize),
+            expected_subscribers.len()
         );
 
         for subscription in fetch_subscriptions_response {
@@ -1144,14 +1122,8 @@ mod tests {
     }
 
     // [utest->req~usubscription-fetch-subscriptions-by-topic~1]
-    // [utest->req~usubscription-fetch-subscriptions-has-more-records~1]
-    // [utest->req~usubscription-fetch-subscriptions-offset~1]
-    #[test_case(None; "No offset")]
-    #[test_case(Some(0); "Offset 0")]
-    #[test_case(Some(1); "Offset 1")]
-    #[test_case(Some(2); "Offset 2")]
     #[tokio::test]
-    async fn test_fetch_subscriptions_by_topic(offset: Option<u32>) {
+    async fn test_fetch_subscriptions_by_topic() {
         helpers::init_once();
         let command_sender = CommandSender::new();
 
@@ -1185,16 +1157,16 @@ mod tests {
 
         // Operation to test
         let result = command_sender
-            .fetch_subscriptions(RequestKind::Topic(desired_topic.clone()), offset)
+            .fetch_subscriptions(RequestKind::Topic(desired_topic.clone()))
             .await;
         assert!(result.is_ok());
 
         // Verify operation result
-        let (fetch_subscriptions_response, _has_more) = result.unwrap();
+        let fetch_subscriptions_response = result.unwrap();
 
         assert_eq!(
             fetch_subscriptions_response.len(),
-            expected_subscribers.len() - (offset.unwrap_or(0) as usize)
+            expected_subscribers.len()
         );
 
         for SubscriptionEntry {

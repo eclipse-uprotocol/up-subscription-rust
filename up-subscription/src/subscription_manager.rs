@@ -43,11 +43,6 @@ use crate::{
 // via tokio mpsc channel. This design allows to forgo the use of any synhronization primitives on the subscription-tracking container
 // data types, as any access is coordinated/serialized via the Event selection loop.
 
-// Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation.
-const UP_MAX_FETCH_SUBSCRIBERS_LEN: usize = 100;
-// Maximum number of `Subscriber` entries to be returned in a `FetchSusbcriptions´ operation.
-const UP_MAX_FETCH_SUBSCRIPTIONS_LEN: usize = 100;
-
 // Queue size of message channel for internal commands - like subscription status change messages or subscription expiration commands.
 const INTERNAL_COMMAND_BUFFER_SIZE: usize = 128;
 
@@ -68,9 +63,6 @@ pub(crate) struct SubscriptionEntry {
     pub(crate) status: SubscriptionStatus,
 }
 
-pub(crate) type SubscribersResponse = (Vec<SubscriberUUri>, bool); // List of subscribers, boolean flag stating if there exist more entries than contained in list
-pub(crate) type SubscriptionsResponse = (Vec<SubscriptionEntry>, bool); // List of subscriber entries, boolean flag stating if there exist more entries than contained in list
-
 // This is the 'outside API' of subscription manager, it includes some events that are only to be used in (and only enabled for) testing.
 #[derive(Debug)]
 pub(crate) enum SubscriptionEvent {
@@ -87,13 +79,11 @@ pub(crate) enum SubscriptionEvent {
     },
     FetchSubscribers {
         topic: TopicUUri,
-        offset: Option<u32>,
-        respond_to: oneshot::Sender<SubscribersResponse>, // return list of subscribers and flag indicating whether there are more
+        respond_to: oneshot::Sender<Vec<SubscriberUUri>>,
     },
     FetchSubscriptions {
         request: RequestKind,
-        offset: Option<u32>,
-        respond_to: oneshot::Sender<SubscriptionsResponse>, // return list of Subscriptions and flag indicating whether there are more
+        respond_to: oneshot::Sender<Vec<SubscriptionEntry>>,
     },
     // Purely for use during testing: get copy of current topic-subscriper ledger
     #[cfg(test)]
@@ -281,26 +271,23 @@ pub(crate) async fn handle_message(
                         }
                     }
                 }
-                SubscriptionEvent::FetchSubscribers {
-                    topic,
-                    offset,
-                    respond_to,
-                } => match fetch_subscribers(&subscriptions, topic, offset) {
-                    // [impl->req~usubscription-fetch-subscribers~1]
-                    Ok(result) => {
-                        if respond_to.send(result).is_err() {
-                            error!("Problem with internal communication");
+                SubscriptionEvent::FetchSubscribers { topic, respond_to } => {
+                    match fetch_subscribers(&subscriptions, topic) {
+                        // [impl->req~usubscription-fetch-subscribers~1]
+                        Ok(result) => {
+                            if respond_to.send(result).is_err() {
+                                error!("Problem with internal communication");
+                            }
+                        }
+                        Err(e) => {
+                            panic!("Persistency failure {e}")
                         }
                     }
-                    Err(e) => {
-                        panic!("Persistency failure {e}")
-                    }
-                },
+                }
                 SubscriptionEvent::FetchSubscriptions {
                     request,
-                    offset,
                     respond_to,
-                } => match fetch_subscriptions(&subscriptions, &remote_topics, request, offset) {
+                } => match fetch_subscriptions(&subscriptions, &remote_topics, request) {
                     Ok(result) => {
                         if respond_to.send(result).is_err() {
                             error!("Problem with internal communication");
@@ -541,27 +528,10 @@ fn remove_subscription(
 fn fetch_subscribers(
     topic_subscribers: &persistency::SubscriptionsStore,
     topic: TopicUUri,
-    offset: Option<u32>,
-) -> Result<SubscribersResponse, persistency::PersistencyError> {
+) -> Result<Vec<SubscriberUUri>, persistency::PersistencyError> {
     // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
     // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
-    let mut subscribers = topic_subscribers.get_topic_subscribers(&topic)?;
-
-    // [impl->req~usubscription-fetch-subscribers-offset~1]
-    if let Some(offset) = offset {
-        subscribers.drain(..offset as usize);
-    }
-
-    // split up result list, to make sense of has_more_records field
-    // [impl->req~usubscription-fetch-subscribers-has-more-records~1]
-    let has_more = if subscribers.len() > UP_MAX_FETCH_SUBSCRIBERS_LEN {
-        subscribers.truncate(UP_MAX_FETCH_SUBSCRIBERS_LEN);
-        true
-    } else {
-        false
-    };
-
-    Ok((subscribers, has_more))
+    topic_subscribers.get_topic_subscribers(&topic)
 }
 
 // Fetch all subscriptions of a topic or subscribers
@@ -569,9 +539,8 @@ fn fetch_subscriptions(
     topic_subscribers: &persistency::SubscriptionsStore,
     remote_topics: &persistency::RemoteTopicsStore,
     request: RequestKind,
-    offset: Option<u32>,
-) -> Result<SubscriptionsResponse, persistency::PersistencyError> {
-    let mut results: Vec<SubscriptionEntry> = match request {
+) -> Result<Vec<SubscriptionEntry>, persistency::PersistencyError> {
+    let results: Vec<SubscriptionEntry> = match request {
         // [impl->req~usubscription-fetch-subscriptions-by-subscriber~1]
         RequestKind::Subscriber(subscriber) => topic_subscribers
             .get_subscriber_topics(&subscriber)?
@@ -609,20 +578,7 @@ fn fetch_subscriptions(
             .collect(),
     };
 
-    // [impl->req~usubscription-fetch-subscriptions-offset~1]
-    if let Some(offset) = offset {
-        results.drain(..offset as usize);
-    }
-
-    // split up result list, to make sense of has_more_records field
-    // [impl->req~usubscription-fetch-subscriptions-has-more-records~1]
-    let mut has_more = false;
-    if results.len() > UP_MAX_FETCH_SUBSCRIPTIONS_LEN {
-        results.truncate(UP_MAX_FETCH_SUBSCRIPTIONS_LEN);
-        has_more = true;
-    }
-
-    Ok((results, has_more))
+    Ok(results)
 }
 
 // Perform remote topic subscription

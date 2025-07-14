@@ -26,9 +26,7 @@ use up_rust::{
 
 use crate::{
     helpers,
-    subscription_manager::{
-        RequestKind, SubscriptionEntry, SubscriptionEvent, SubscriptionsResponse,
-    },
+    subscription_manager::{RequestKind, SubscriptionEntry, SubscriptionEvent},
 };
 
 pub(crate) struct FetchSubscriptionsRequestHandler {
@@ -60,9 +58,7 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
                 message_attributes,
             )?;
 
-        let FetchSubscriptionsRequest {
-            request, offset, ..
-        } = fetch_subscriptions_request;
+        let FetchSubscriptionsRequest { request, .. } = fetch_subscriptions_request;
         let request_kind = match request {
             Some(Request::Topic(topic)) => {
                 if !topic.is_empty() {
@@ -92,10 +88,9 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         };
 
         // Interact with subscription manager backend
-        let (respond_to, receive_from) = oneshot::channel::<SubscriptionsResponse>();
+        let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriptionEntry>>();
         let se = SubscriptionEvent::FetchSubscriptions {
             request: request_kind,
-            offset,
             respond_to,
         };
 
@@ -112,8 +107,7 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         };
 
         // Build and return result
-        let (subscriptions, has_more) = fetch_subscriptions_response;
-        let subscription_list: Vec<Subscription> = subscriptions
+        let subscription_list: Vec<Subscription> = fetch_subscriptions_response
             .iter()
             .map(
                 |SubscriptionEntry {
@@ -135,7 +129,6 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
 
         let fetch_subscriptions_response = FetchSubscriptionsResponse {
             subscriptions: subscription_list,
-            has_more_records: Some(has_more),
             ..Default::default()
         };
 
@@ -202,7 +195,6 @@ mod tests {
         match subscription_event {
             SubscriptionEvent::FetchSubscriptions {
                 request,
-                offset,
                 respond_to,
             } => {
                 match request {
@@ -216,11 +208,8 @@ mod tests {
                     }
                     _ => panic!("Wrong request details"),
                 }
-                assert_eq!(offset.unwrap_or_default(), 42);
-
-                let _ = respond_to.send(SubscriptionsResponse::default());
+                let _ = respond_to.send(Vec::default());
             }
-
             _ => panic!("Wrong event type"),
         }
     }

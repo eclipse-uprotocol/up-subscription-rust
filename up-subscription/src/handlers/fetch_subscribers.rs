@@ -24,10 +24,7 @@ use up_rust::{
     UAttributes,
 };
 
-use crate::{
-    helpers,
-    subscription_manager::{SubscribersResponse, SubscriptionEvent},
-};
+use crate::{helpers, subscription_manager::SubscriptionEvent, usubscription::SubscriberUUri};
 
 pub(crate) struct FetchSubscribersRequestHandler {
     subscription_sender: Sender<SubscriptionEvent>,
@@ -57,7 +54,7 @@ impl RequestHandler for FetchSubscribersRequestHandler {
                 &request_payload,
                 message_attributes,
             )?;
-        let FetchSubscribersRequest { topic, offset, .. } = fetch_subscribers_request;
+        let FetchSubscribersRequest { topic, .. } = fetch_subscribers_request;
         let Some(topic) = topic.into_option() else {
             return Err(ServiceInvocationError::InvalidArgument(
                 "No topic defined in request".to_string(),
@@ -69,12 +66,8 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         helpers::validate_uri(&topic)?;
 
         // Interact with subscription manager backend
-        let (respond_to, receive_from) = oneshot::channel::<SubscribersResponse>();
-        let se = SubscriptionEvent::FetchSubscribers {
-            topic,
-            offset,
-            respond_to,
-        };
+        let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriberUUri>>();
+        let se = SubscriptionEvent::FetchSubscribers { topic, respond_to };
 
         if let Err(e) = self.subscription_sender.send(se).await {
             error!("Error communicating with subscription manager: {e}");
@@ -89,8 +82,7 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         };
 
         // Build and return result
-        let (subscribers, has_more) = fetch_subscribers_response;
-        let subscriber_infos = subscribers
+        let subscriber_infos = fetch_subscribers_response
             .iter()
             .map(|subscriber| SubscriberInfo {
                 uri: Some(subscriber.clone()).into(),
@@ -99,7 +91,6 @@ impl RequestHandler for FetchSubscribersRequestHandler {
             .collect();
         let fetch_subscribers_response = FetchSubscribersResponse {
             subscribers: subscriber_infos,
-            has_more_records: Some(has_more),
             ..Default::default()
         };
 
@@ -165,7 +156,7 @@ mod tests {
                 topic, respond_to, ..
             } => {
                 assert_eq!(topic, test_lib::helpers::local_topic1_uri());
-                let _ = respond_to.send(SubscribersResponse::default());
+                let _ = respond_to.send(Vec::default());
             }
             _ => panic!("Wrong event type"),
         }
