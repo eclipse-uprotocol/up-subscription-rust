@@ -74,11 +74,13 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
                 }
             }
             Some(Request::Subscriber(subscriber)) => {
-                if subscriber.uri.is_some() {
-                    RequestKind::Subscriber(subscriber.uri.unwrap_or_default())
+                if let Some(subscriber) = subscriber.uri.into_option() {
+                    // [impl->dsn~usubscription-fetch-subscriptions-invalid-subscriber~1]
+                    helpers::validate_uri(&subscriber)?;
+                    RequestKind::Subscriber(subscriber)
                 } else {
                     return Err(ServiceInvocationError::InvalidArgument(
-                        "Empty subscriber uri in Request::Subscriber".to_string(),
+                        "Missing subscriber uri in Request::Subscriber".to_string(),
                     ));
                 }
             }
@@ -149,7 +151,10 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use test_case::test_case;
     use tokio::sync::mpsc::{self};
+
+    use up_rust::UUri;
 
     use crate::{helpers, tests::test_lib};
 
@@ -328,6 +333,69 @@ mod tests {
         let result = request_handler
             .handle_request(
                 RESOURCE_ID_FETCH_SUBSCRIPTIONS,
+                &message_attributes,
+                Some(request_payload),
+            )
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ServiceInvocationError::InvalidArgument(_) => {}
+            _ => panic!("Wrong error type"),
+        }
+    }
+
+    // [utest->dsn~usubscription-fetch-subscriptions-invalid-subscriber~1]
+    #[test_case(UUri::default(); "Bad subscriber UUri")]
+    #[test_case(UUri {
+            authority_name: String::from("*"),
+            ue_id: test_lib::helpers::SUBSCRIBER1_ID,
+            ue_version_major: test_lib::helpers::SUBSCRIBER1_VERSION as u32,
+            resource_id: test_lib::helpers::SUBSCRIBER1_RESOURCE as u32,
+            ..Default::default()
+        }; "Wildcard authority in subscriber UUri")]
+    #[test_case(UUri {
+            authority_name: test_lib::helpers::LOCAL_AUTHORITY.into(),
+            ue_id: 0xFFFF_0000,
+            ue_version_major: test_lib::helpers::SUBSCRIBER1_VERSION as u32,
+            resource_id: test_lib::helpers::SUBSCRIBER1_RESOURCE as u32,
+            ..Default::default()
+        }; "Wildcard entity id in subscriber UUri")]
+    #[test_case(UUri {
+            authority_name: test_lib::helpers::LOCAL_AUTHORITY.into(),
+            ue_id: test_lib::helpers::SUBSCRIBER1_ID,
+            ue_version_major: test_lib::helpers::SUBSCRIBER1_VERSION as u32,
+            resource_id: 0x0000_FFFF,
+            ..Default::default()
+        }; "Wildcard resource id in subscriber UUri")]
+    #[tokio::test]
+    async fn test_invalid_subscriber_uri(subscriber: UUri) {
+        helpers::init_once();
+
+        // create request and other required object(s)
+        let fetch_subscriptions_request = FetchSubscriptionsRequest {
+            request: Some(up_rust::core::usubscription::Request::Subscriber(
+                SubscriberInfo {
+                    uri: Some(subscriber).into(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        let request_payload =
+            UPayload::try_from_protobuf(fetch_subscriptions_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+        let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
+
+        // create handler and perform tested operation
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
+
+        let result = request_handler
+            .handle_request(
+                up_rust::core::usubscription::RESOURCE_ID_FETCH_SUBSCRIPTIONS,
                 &message_attributes,
                 Some(request_payload),
             )
