@@ -49,7 +49,7 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-register-notifications-invalid-topic~1]
+        // [impl->dsn~usubscription-fetch-subscriptions-protobuf~1]
         let (fetch_subscriptions_request, _source) =
             helpers::extract_inputs::<FetchSubscriptionsRequest>(
                 RESOURCE_ID_FETCH_SUBSCRIPTIONS,
