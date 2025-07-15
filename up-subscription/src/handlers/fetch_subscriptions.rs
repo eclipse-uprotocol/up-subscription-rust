@@ -49,7 +49,7 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-fetch-subscriptions-protobuf~1]
+        // [impl->dsn~usubscription-register-notifications-invalid-topic~1]
         let (fetch_subscriptions_request, _source) =
             helpers::extract_inputs::<FetchSubscriptionsRequest>(
                 RESOURCE_ID_FETCH_SUBSCRIPTIONS,
@@ -61,13 +61,9 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         let FetchSubscriptionsRequest { request, .. } = fetch_subscriptions_request;
         let request_kind = match request {
             Some(Request::Topic(topic)) => {
-                if !topic.is_empty() {
-                    RequestKind::Topic(topic)
-                } else {
-                    return Err(ServiceInvocationError::InvalidArgument(
-                        "Empty topic in Request::Topic".to_string(),
-                    ));
-                }
+                // [impl->dsn~usubscription-fetch-subscriptions-invalid-topic~1]
+                helpers::validate_uri(&topic)?;
+                RequestKind::Topic(topic)
             }
             Some(Request::Subscriber(subscriber)) => {
                 if let Some(subscriber) = subscriber.uri.into_option() {
@@ -369,6 +365,64 @@ mod tests {
                     ..Default::default()
                 },
             )),
+            ..Default::default()
+        };
+        let request_payload =
+            UPayload::try_from_protobuf(fetch_subscriptions_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+        let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
+
+        // create handler and perform tested operation
+        let request_handler = FetchSubscriptionsRequestHandler::new(subscription_sender);
+
+        let result = request_handler
+            .handle_request(
+                up_rust::core::usubscription::RESOURCE_ID_FETCH_SUBSCRIPTIONS,
+                &message_attributes,
+                Some(request_payload),
+            )
+            .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ServiceInvocationError::InvalidArgument(_) => {}
+            _ => panic!("Wrong error type"),
+        }
+    }
+
+    // [utest->dsn~usubscription-fetch-subscriptions-invalid-topic~1]
+    #[test_case(UUri::default(); "Bad topic UUri")]
+    #[test_case(UUri {
+            authority_name: String::from("*"),
+            ue_id: test_lib::helpers::TOPIC_LOCAL1_ID,
+            ue_version_major: test_lib::helpers::TOPIC_LOCAL1_VERSION as u32,
+            resource_id: test_lib::helpers::TOPIC_LOCAL1_RESOURCE as u32,
+            ..Default::default()
+        }; "Wildcard authority in topic UUri")]
+    #[test_case(UUri {
+            authority_name: test_lib::helpers::LOCAL_AUTHORITY.into(),
+            ue_id: 0xFFFF_0000,
+            ue_version_major: test_lib::helpers::TOPIC_LOCAL1_VERSION as u32,
+            resource_id: test_lib::helpers::TOPIC_LOCAL1_RESOURCE as u32,
+            ..Default::default()
+        }; "Wildcard entity id in topic UUri")]
+    #[test_case(UUri {
+            authority_name: test_lib::helpers::LOCAL_AUTHORITY.into(),
+            ue_id: test_lib::helpers::TOPIC_LOCAL1_ID,
+            ue_version_major: test_lib::helpers::TOPIC_LOCAL1_VERSION as u32,
+            resource_id: 0x0000_FFFF,
+            ..Default::default()
+        }; "Wildcard resource id in topic UUri")]
+    #[tokio::test]
+    async fn test_invalid_topic_uri(topic: UUri) {
+        helpers::init_once();
+
+        // create request and other required object(s)
+        let fetch_subscriptions_request = FetchSubscriptionsRequest {
+            request: Some(up_rust::core::usubscription::Request::Topic(topic)),
             ..Default::default()
         };
         let request_payload =
