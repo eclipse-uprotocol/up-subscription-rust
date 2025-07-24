@@ -85,6 +85,9 @@ pub(crate) enum SubscriptionEvent {
         request: RequestKind,
         respond_to: oneshot::Sender<Vec<SubscriptionEntry>>,
     },
+    Reset {
+        respond_to: oneshot::Sender<()>,
+    },
     // Purely for use during testing: get copy of current topic-subscriper ledger
     #[cfg(test)]
     GetTopicSubscribers {
@@ -297,6 +300,17 @@ pub(crate) async fn handle_message(
                         panic!("Persistency failure {e}")
                     }
                 },
+                SubscriptionEvent::Reset { respond_to } => {
+                    reset(
+                        &mut subscriptions,
+                        &mut remote_topics,
+                        notification_sender.clone(),
+                    )
+                    .await;
+                    if respond_to.send(()).is_err() {
+                        error!("Problem with internal communication");
+                    };
+                }
                 #[cfg(test)]
                 SubscriptionEvent::GetTopicSubscribers { respond_to } => {
                     match subscriptions.get_data() {
@@ -581,6 +595,63 @@ fn fetch_subscriptions(
     Ok(results)
 }
 
+// [impl->req~usubscription-reset~1]
+async fn reset(
+    topic_subscribers: &mut persistency::SubscriptionsStore,
+    remote_topics: &mut persistency::RemoteTopicsStore,
+    notification_sender: Sender<NotificationEvent>,
+) {
+    // 1. Retrieve list of all current subscriber-topic combinations
+    let flattened_subscriptions = topic_subscribers.get_flattened_subscriptions();
+
+    // 2. Reset/clear all stored subscriptions, remote subscriptions and notification-registrations
+    // We plow through errors for now - re-subscribing to existing things should do no harm, in case a reset did now work
+    if let Err(e) = topic_subscribers.reset() {
+        error!("Error resetting subscriptions list: {e}");
+    }
+    if let Err(e) = remote_topics.reset() {
+        error!("Error resetting remote subscriptions list: {e}");
+    }
+    #[allow(clippy::mutable_key_type)]
+    let registered_notifactions = notification_manager::reset(notification_sender.clone())
+        .await
+        .unwrap_or_default();
+
+    // 3. Notify every topic subscriber about the reset (all former subscriptions are UNSUBSCRIBED now)
+    if let Ok(flattened_subscriptions) = flattened_subscriptions {
+        helpers::spawn_and_log_error(async move {
+            // Notify all topic subscribers
+            for (subscriber, topic, _) in flattened_subscriptions {
+                notification_manager::notify(
+                    notification_sender.clone(),
+                    Some(subscriber),
+                    topic,
+                    SubscriptionStatus {
+                        state: TopicState::UNSUBSCRIBED.into(),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            }
+
+            // Notify all registered-for-notification clients
+            for (subscriber, topic) in registered_notifactions {
+                notification_manager::notify(
+                    notification_sender.clone(),
+                    Some(subscriber),
+                    topic,
+                    SubscriptionStatus {
+                        state: TopicState::UNSUBSCRIBED.into(),
+                        ..Default::default()
+                    },
+                )
+                .await;
+            }
+            Ok(())
+        });
+    }
+}
+
 // Perform remote topic subscription
 async fn remote_subscribe(
     topic: TopicUUri,
@@ -764,6 +835,8 @@ mod tests {
     // [utest->req~usubscription-subscribe-expiration~1]
     #[tokio::test]
     async fn test_schedule_future_unsubscribe() {
+        helpers::init_once();
+
         let (internal_cmd_sender, mut internal_cmd_receiver) =
             mpsc::channel::<InternalSubscriptionEvent>(INTERNAL_COMMAND_BUFFER_SIZE);
 
@@ -800,6 +873,8 @@ mod tests {
     // [utest->req~usubscription-subscribe-expiration~1]
     #[tokio::test]
     async fn test_schedule_past_unsubscribe() {
+        helpers::init_once();
+
         let (internal_cmd_sender, mut internal_cmd_receiver) =
             mpsc::channel::<InternalSubscriptionEvent>(INTERNAL_COMMAND_BUFFER_SIZE);
 
@@ -836,6 +911,7 @@ mod tests {
     #[tokio::test]
     async fn test_remote_subscribe() {
         helpers::init_once();
+
         let expected_topic = test_lib::helpers::remote_topic1_uri();
 
         // build request

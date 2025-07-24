@@ -165,7 +165,6 @@ mod tests {
             request: Some(up_rust::core::usubscription::Request::Subscriber(
                 test_lib::helpers::subscriber_info1(),
             )),
-            offset: Some(42),
             ..Default::default()
         };
         let request_payload =

@@ -23,19 +23,19 @@ use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscript
 #[cfg(unix)]
 use daemonize::Daemonize;
 
-#[cfg(feature = "mqtt5")]
-use up_transport_mqtt5::Mqtt5TransportOptions;
+// #[cfg(feature = "mqtt5")]
+// use up_transport_mqtt5::Mqtt5TransportOptions;
 
-#[cfg(feature = "zenoh")]
-use crate::transport::zenoh::ZenohArgs;
+// #[cfg(feature = "zenoh")]
+// use crate::transport::zenoh::ZenohArgs;
 
 mod transport;
-#[cfg(feature = "mqtt5")]
-use transport::get_mqtt5_transport;
-#[cfg(feature = "socket")]
-use transport::get_socket_transport;
-#[cfg(feature = "zenoh")]
-use transport::get_zenoh_transport;
+#[cfg(feature = "local")]
+use transport::get_local_transport;
+// #[cfg(feature = "mqtt5")]
+// use transport::get_mqtt5_transport;
+// #[cfg(feature = "zenoh")]
+// use transport::get_zenoh_transport;
 
 fn between_1_and_1024(s: &str) -> Result<usize, String> {
     number_range(s, 1, 1024)
@@ -69,12 +69,12 @@ impl std::error::Error for StartupError {}
 enum Transport {
     #[default]
     None,
-    #[cfg(feature = "mqtt5")]
-    Mqtt5,
-    #[cfg(feature = "socket")]
-    Socket,
-    #[cfg(feature = "zenoh")]
-    Zenoh,
+    #[cfg(feature = "local")]
+    Local,
+    // #[cfg(feature = "mqtt5")]
+    // Mqtt5,
+    // #[cfg(feature = "zenoh")]
+    // Zenoh,
 }
 
 // All our args
@@ -113,14 +113,13 @@ pub(crate) struct Args {
     /// Increase verbosity of output, default is false (reduced verbosity)
     #[arg(short, long, env, default_value_t = false)]
     verbose: bool,
+    // #[cfg(feature = "mqtt5")]
+    // #[command(flatten)]
+    // mqtt_args: Mqtt5TransportOptions,
 
-    #[cfg(feature = "mqtt5")]
-    #[command(flatten)]
-    mqtt_args: Mqtt5TransportOptions,
-
-    #[cfg(feature = "zenoh")]
-    #[command(flatten)]
-    zenoh_args: ZenohArgs,
+    // #[cfg(feature = "zenoh")]
+    // #[command(flatten)]
+    // zenoh_args: ZenohArgs,
 }
 
 #[tokio::main]
@@ -129,12 +128,12 @@ async fn main() {
 
     // Setup logging, get configuration
     std::env::set_var("RUST_LOG", "info");
-    #[cfg(feature = "zenoh")]
-    std::env::set_var("RUST_LOG", "info,zenoh=warn");
+    // #[cfg(feature = "zenoh")]
+    // std::env::set_var("RUST_LOG", "info,zenoh=warn");
     if args.verbose {
         std::env::set_var("RUST_LOG", "trace");
-        #[cfg(feature = "zenoh")]
-        std::env::set_var("RUST_LOG", "trace,zenoh=info");
+        // #[cfg(feature = "zenoh")]
+        // std::env::set_var("RUST_LOG", "trace,zenoh=info");
     }
     up_subscription::init_once();
 
@@ -147,28 +146,28 @@ async fn main() {
 
     // Deal with transport module that we're to use
     let transport: Option<Arc<dyn UTransport>> = match args.transport {
-        #[cfg(feature = "mqtt5")]
-        Transport::Mqtt5 => Some(
-            get_mqtt5_transport(_config.clone(), args.mqtt_args)
+        #[cfg(feature = "local")]
+        Transport::Local => Some(
+            get_local_transport()
                 .await
-                .inspect_err(|e| panic!("Error setting up MQTT5 transport: {}", e.get_message()))
+                .inspect_err(|e| panic!("Error setting up local transport: {}", e.get_message()))
                 .unwrap(),
         ),
-        #[cfg(feature = "socket")]
-        Transport::Socket => Some(
-            get_socket_transport(_config.clone())
-                .await
-                .inspect_err(|e| panic!("Error setting up socket transport: {}", e.get_message()))
-                .unwrap(),
-        ),
-        #[cfg(feature = "zenoh")]
-        Transport::Zenoh => Some(
-            get_zenoh_transport(_config.clone(), args.zenoh_args)
-                .await
-                .inspect_err(|e| panic!("Error setting up Zenoh transport: {}", e.get_message()))
-                .unwrap(),
-        ),
-        _ => None,
+        // #[cfg(feature = "mqtt5")]
+        // Transport::Mqtt5 => Some(
+        //     get_mqtt5_transport(_config.clone(), args.mqtt_args)
+        //         .await
+        //         .inspect_err(|e| panic!("Error setting up MQTT5 transport: {}", e.get_message()))
+        //         .unwrap(),
+        // ),
+        // #[cfg(feature = "zenoh")]
+        // Transport::Zenoh => Some(
+        //     get_zenoh_transport(_config.clone(), args.zenoh_args)
+        //         .await
+        //         .inspect_err(|e| panic!("Error setting up Zenoh transport: {}", e.get_message()))
+        //         .unwrap(),
+        // ),
+        Transport::None => None,
     };
 
     if transport.is_none() {

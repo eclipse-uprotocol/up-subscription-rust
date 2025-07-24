@@ -1,5 +1,5 @@
 /********************************************************************************
- * Copyright (c) 2024 Contributors to the Eclipse Foundation
+ * Copyright (c) 2025 Contributors to the Eclipse Foundation
  *
  * See the NOTICE file(s) distributed with this work for additional
  * information regarding copyright ownership.
@@ -11,17 +11,10 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-#[cfg(feature = "local")]
-pub(crate) mod local;
-#[cfg(feature = "local")]
-pub(crate) use local::get_local_transport;
+use std::sync::Arc;
 
-// #[cfg(feature = "mqtt5")]
-// pub(crate) mod mqtt5;
-// #[cfg(feature = "mqtt5")]
-// pub(crate) use mqtt5::get_mqtt5_transport;
+use up_rust::{local_transport::LocalTransport, UStatus, UTransport};
 
-// #[cfg(feature = "zenoh")]
-// pub(crate) mod zenoh;
-// #[cfg(feature = "zenoh")]
-// pub(crate) use zenoh::get_zenoh_transport;
+pub(crate) async fn get_local_transport() -> Result<Arc<dyn UTransport>, UStatus> {
+    Ok(Arc::new(LocalTransport::default()))
+}

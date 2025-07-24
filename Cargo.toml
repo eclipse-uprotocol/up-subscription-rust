@@ -25,18 +25,19 @@ keywords = ["uProtocol", "uSubscription"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/eclipse-uprotocol/up-subscription-rust"
-rust-version = "1.84.0"
-version = "0.2.0"
+rust-version = "1.82"
+version = "0.3.0"
 
 [workspace.dependencies]
 async-trait = { version = "0.1" }
 env_logger = { version = "0.11" }
 log = { version = "0.4" }
 mockall = { version = "0.13" }
-protobuf = { version = "3.4" }
+protobuf = { version = "3.7.2" }
 test-case = { version = "3.3" }
 tokio = { version = "1", features = ["full"] }
-up-rust = { version = "0.5.0", features = ["usubscription"] }
+#up-rust = { version = "0.6.0", features = ["usubscription"] }
+up-rust = { git = "https://github.com/eclipse-uprotocol/up-rust.git", rev = "ca4f39d067d0e869d1e17f36681463ffd73643fd", features = ["usubscription"] }
 up-subscription = { path = "./up-subscription" }
 
 # Config for 'cargo dist'

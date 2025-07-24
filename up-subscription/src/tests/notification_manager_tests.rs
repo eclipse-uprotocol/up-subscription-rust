@@ -245,6 +245,4 @@ mod tests {
             .await;
         assert!(r.is_ok())
     }
-
-    // This test
 }

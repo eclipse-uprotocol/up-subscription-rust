@@ -24,7 +24,7 @@ use up_rust::{
     communication::{InMemoryRpcServer, RpcServer},
     core::usubscription::{
         RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_FETCH_SUBSCRIPTIONS,
-        RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_SUBSCRIBE,
+        RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_RESET, RESOURCE_ID_SUBSCRIBE,
         RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
     },
     UCode, UStatus, UTransport, UUri,
@@ -34,7 +34,7 @@ use crate::{
     handlers::{
         fetch_subscribers::FetchSubscribersRequestHandler,
         fetch_subscriptions::FetchSubscriptionsRequestHandler,
-        register_for_notifications::RegisterNotificationsRequestHandler,
+        register_for_notifications::RegisterNotificationsRequestHandler, reset::ResetHandler,
         subscribe::SubscriptionRequestHandler,
         unregister_for_notifications::UnregisterNotificationsRequestHandler,
         unsubscribe::UnubscribeRequestHandler,
@@ -237,6 +237,11 @@ async fn register_handlers(
             RESOURCE_ID_FETCH_SUBSCRIPTIONS,
             fetch_subscriptions_handler,
         )
+        .await
+        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+    let reset_handler = Arc::new(ResetHandler::new(subscription_sender.clone()));
+    server
+        .register_endpoint(Some(&origin_filter), RESOURCE_ID_RESET, reset_handler)
         .await
         .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
 

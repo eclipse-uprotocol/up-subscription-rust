@@ -49,7 +49,7 @@ Note: After `cargo build`ing the up-subscription-rust projects, the `up-subscrip
 cargo run --features zenoh -- -t zenoh -a usubscription.local -v
 ```
 
-`up-subscription-cli` can be used with any uProtocol rust transport implementation - the available options are controlled as cargo features, refer to the definitions in the `[features]` section of up-subscription-cli `Cargo.toml`. Currently supported are [zenoh](https://github.com/eclipse-uprotocol/up-transport-zenoh-rust), [socket](https://github.com/eclipse-uprotocol/up-transport-socket) and [mqtt](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust) transports.
+`up-subscription-cli` can be used with any uProtocol rust transport implementation - the available options are controlled as cargo features, refer to the definitions in the `[features]` section of up-subscription-cli `Cargo.toml`. Currently supported are `local` (minimal [up-rust](https://github.com/eclipse-uprotocol/up-rust) utility implementation, for testing and development purposes), [`zenoh`](https://github.com/eclipse-uprotocol/up-transport-zenoh-rust) and [`mqtt`](https://github.com/eclipse-uprotocol/up-transport-mqtt5-rust) transports.
 
 ### Running with docker
 

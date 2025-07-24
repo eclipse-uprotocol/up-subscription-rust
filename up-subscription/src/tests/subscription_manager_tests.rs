@@ -47,6 +47,7 @@ mod tests {
     // Simple subscription-manager-actor front-end to use for testing
     struct CommandSender {
         command_sender: Sender<SubscriptionEvent>,
+        notification_sender: Option<Sender<NotificationEvent>>,
         shutdowner: Arc<Notify>,
     }
 
@@ -84,7 +85,8 @@ mod tests {
                                 );
 
                                 let _ = respond_to.send(());
-                            } else {
+                            }
+                            else {
                                 panic!("Expected a NotificationEvent::StateChange message, got something else")
                             }
                         },
@@ -109,11 +111,12 @@ mod tests {
             });
             CommandSender {
                 command_sender,
+                notification_sender: None,
                 shutdowner: shutdown_notification,
             }
         }
 
-        // Allows configuration of expected invoke_method() calls from subscription manager (provide expected request and response for utransport mock)
+        // Allows configuration of expected notifications during test
         async fn new_with_expected_notifications(
             mut expected_notifications: Vec<NotificationEvent>,
         ) -> Self {
@@ -137,30 +140,49 @@ mod tests {
             // Spawn notification receiver task
             let shutdown_notification_cloned = shutdown_notification.clone();
             helpers::spawn_and_log_error(async move {
+                #[allow(clippy::mutable_key_type)]
+                let mut notification_topics: HashMap<SubscriberUUri, TopicUUri> = HashMap::new();
                 loop {
                     tokio::select! {
                         Some(event) = notification_receiver.recv() => {
-                            if let Some(pos) = expected_notifications.iter().position(|e| e == &event) {
-                                if let NotificationEvent::StateChange { subscriber, status, topic, respond_to } = event {
-                                    println!(
-                                        "Change Notification received: {} - {} - {}",
-                                        subscriber.unwrap_or_default().to_uri(true),
-                                        topic.to_uri(true),
-                                        status
-                                    );
+                            match event {
+                                NotificationEvent::StateChange { .. } => {
+                                    if let Some(pos) = expected_notifications.iter().position(|e| e == &event) {
+                                        if let NotificationEvent::StateChange { subscriber, status, topic, respond_to } = event {
+                                            println!(
+                                                "Change Notification received: {} - {} - {}",
+                                                subscriber.unwrap_or_default().to_uri(true),
+                                                topic.to_uri(true),
+                                                status
+                                            );
+                                            // This is the ack response to the entity that initiated the notification to be send (e.g. subscription manager)
+                                            let _ = respond_to.send(());
+                                        }
+                                        // Send ack back to test case that was providing the expected_notifications back channel
+                                        let matched = expected_notifications.remove(pos);
+                                        if let NotificationEvent::StateChange { respond_to, .. } = matched {
+                                            let _ = respond_to.send(());
+                                        }
+                                    }
+                                },
+                                NotificationEvent::SetNotificationTopics { notification_topics_replacement, respond_to } => {
+                                    println!("Notification Manager SetNotificationTopic command received");
+                                    notification_topics = notification_topics_replacement;
                                     let _ = respond_to.send(());
+                                },
+                                NotificationEvent::GetNotificationTopics { respond_to } =>  {
+                                    println!("Notification Manager GetNotificationTopic command received");
+                                    let _ = respond_to.send(notification_topics.clone());
+                                },
+                                NotificationEvent::Reset { respond_to } => {
+                                    println!("Notification Manager Reset command received");
+                                    let _ = respond_to.send(Ok(()));
                                 }
-
-                                // Send ack back to test case that was providing the expected_notifications back channel
-                                let matched = expected_notifications.remove(pos);
-                                if let NotificationEvent::StateChange { respond_to, .. } = matched {
-                                    let _ = respond_to.send(());
-                                }
-                            } else {
-                                panic!("Received unexpected notification event: {event:?}");
+                                _ => panic!("Received unexpected notification event: {event:?}")
                             }
                         },
                         _ = shutdown_notification_cloned.notified() => {
+                            println!("Shutting down notification reception loop");
                             break;
                         },
                     };
@@ -169,13 +191,14 @@ mod tests {
             });
 
             // Spawn off subscription manager task
+            let notification_sender_cloned = notification_sender.clone();
             let shutdown_notification_cloned = shutdown_notification.clone();
             helpers::spawn_and_log_error(async move {
                 handle_message(
                     config.clone(),
                     Arc::new(transport_mock),
                     command_receiver,
-                    notification_sender,
+                    notification_sender_cloned,
                     shutdown_notification_cloned,
                 )
                 .await;
@@ -185,11 +208,13 @@ mod tests {
 
             CommandSender {
                 command_sender,
+                notification_sender: Some(notification_sender),
                 shutdowner: shutdown_notification,
             }
         }
 
         // Allows configuration of expected invoke_method() calls from subscription manager (provide expected request and response for utransport mock)
+        // Useful e.g. for testing remote subscription operations, where subscription manager is expected to invoke methods on other uEntities
         async fn new_with_client_options<R: MessageFull, S: MessageFull>(
             expected_request: R,
             expected_response: S,
@@ -234,6 +259,7 @@ mod tests {
 
             CommandSender {
                 command_sender,
+                notification_sender: None,
                 shutdowner: shutdown_notification,
             }
         }
@@ -340,6 +366,32 @@ mod tests {
                 topic_subscribers_replacement: remote_topics_replacement,
                 respond_to,
             };
+
+            self.command_sender.send(command).await?;
+            Ok(receive_from.await?)
+        }
+
+        #[allow(clippy::mutable_key_type)]
+        async fn set_notification_topics(
+            &self,
+            notification_topics_replacement: HashMap<SubscriberUUri, TopicUUri>,
+        ) -> Result<(), Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<()>();
+            let command = NotificationEvent::SetNotificationTopics {
+                notification_topics_replacement,
+                respond_to,
+            };
+            self.notification_sender
+                .as_ref()
+                .unwrap()
+                .send(command)
+                .await?;
+            Ok(receive_from.await?)
+        }
+
+        async fn reset(&self) -> Result<(), Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<()>();
+            let command = SubscriptionEvent::Reset { respond_to };
 
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
@@ -1178,5 +1230,91 @@ mod tests {
             assert_eq!(topic, desired_topic);
             assert!(expected_subscribers.contains_key(&subscriber));
         }
+    }
+
+    // [utest->req~usubscription-reset~1]
+    #[tokio::test]
+    async fn test_reset_notifications() {
+        helpers::init_once();
+
+        // Prepare things
+        let topic = test_lib::helpers::remote_topic1_uri();
+        let subscriber = test_lib::helpers::subscriber_uri1();
+        let (respond_to_topic_subscriber, state_changed_topic_subscriber) =
+            oneshot::channel::<()>();
+        let (respond_to_notification_registrar, state_changed_notification_registrar) =
+            oneshot::channel::<()>();
+
+        let expected_notification_topic_subscriber = NotificationEvent::StateChange {
+            subscriber: subscriber.clone().into(),
+            topic: topic.clone(),
+            status: SubscriptionStatus {
+                state: State::UNSUBSCRIBED.into(),
+                ..Default::default()
+            },
+            respond_to: respond_to_topic_subscriber,
+        };
+        let expected_notification_notification_registrar = NotificationEvent::StateChange {
+            subscriber: test_lib::helpers::subscriber_uri2().into(),
+            topic: test_lib::helpers::local_topic2_uri(),
+            status: SubscriptionStatus {
+                state: State::UNSUBSCRIBED.into(),
+                ..Default::default()
+            },
+            respond_to: respond_to_notification_registrar,
+        };
+
+        let command_sender = CommandSender::new_with_expected_notifications(vec![
+            expected_notification_topic_subscriber,
+            expected_notification_notification_registrar,
+        ])
+        .await;
+
+        // We need a subscriber to topic, which we're subsequently expecting a state change notification to be sent to on reset
+        // let subscribers = HashMap<TopicUUri, HashMap<SubscriberUUri, Option<ExpiryTimestamp>>>::new();
+        // set starting state
+        #[allow(clippy::mutable_key_type)]
+        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
+        #[allow(clippy::mutable_key_type)]
+        let entry = desired_state.entry(topic.clone()).or_default();
+        entry.insert(subscriber.clone(), None);
+        assert!(command_sender
+            .set_topic_subscribers(desired_state)
+            .await
+            .is_ok());
+
+        // Add a notification-registration to the mock backend, for which we subsequently expect a notifcation on reset
+        #[allow(clippy::mutable_key_type)]
+        let mut notification_topics_replacement: HashMap<SubscriberUUri, TopicUUri> =
+            HashMap::new();
+        notification_topics_replacement.insert(
+            test_lib::helpers::subscriber_uri2(),
+            test_lib::helpers::local_topic2_uri(),
+        );
+        assert!(command_sender
+            .set_notification_topics(notification_topics_replacement)
+            .await
+            .is_ok());
+
+        // Perform reset
+        command_sender
+            .reset()
+            .await
+            .expect("Error performing reset command");
+
+        // ensure that we have run through all the async layers and reached the notification assertion statements
+        assert!(state_changed_topic_subscriber.await.is_ok());
+        assert!(state_changed_notification_registrar.await.is_ok());
+
+        // Assert that topic subscriber lists is empty after reset
+        // (We don't do the same thing for notification manager, because that is entirely mocked in the context of this suite of tests)
+        #[allow(clippy::mutable_key_type)]
+        let subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("Error retrieving subscriber list after reset");
+        assert!(subscribers.is_empty());
+
+        command_sender.shutdown().await;
     }
 }

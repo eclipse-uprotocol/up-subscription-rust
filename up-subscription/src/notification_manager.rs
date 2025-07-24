@@ -12,7 +12,6 @@
  ********************************************************************************/
 
 use log::*;
-#[cfg(test)]
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{mpsc::Receiver, mpsc::Sender, oneshot, Notify};
@@ -26,7 +25,8 @@ use up_rust::{
 };
 
 use crate::{
-    helpers, persistency,
+    helpers,
+    persistency::{self, PersistencyError},
     usubscription::{SubscriberUUri, TopicUUri, INCLUDE_SCHEMA},
     USubscriptionConfiguration,
 };
@@ -51,8 +51,9 @@ pub(crate) enum NotificationEvent {
         status: SubscriptionStatus,
         respond_to: oneshot::Sender<()>,
     },
-    // Purely for use during testing: get copy of current notifyee ledger
-    #[cfg(test)]
+    Reset {
+        respond_to: oneshot::Sender<Result<(), PersistencyError>>,
+    },
     GetNotificationTopics {
         respond_to: oneshot::Sender<HashMap<SubscriberUUri, TopicUUri>>,
     },
@@ -225,7 +226,11 @@ pub(crate) async fn notification_engine(
 
                 let _ = respond_to.send(());
             }
-            #[cfg(test)]
+            NotificationEvent::Reset { respond_to } => {
+                if respond_to.send(notifications.reset()).is_err() {
+                    error!("Problem with internal communication");
+                }
+            }
             NotificationEvent::GetNotificationTopics { respond_to } => {
                 let _r = respond_to.send(
                     notifications
@@ -248,7 +253,7 @@ pub(crate) async fn notification_engine(
 }
 
 // Convenience wrapper for sending state change notification messages
-// susbcriber is an Option, because in the case ob remote subscription state changes, there is no subscriber (other than local usubscription service)
+// `susbcriber` is an Option, because in the case ob remote subscription state changes, there is no subscriber (other than local usubscription service)
 pub(crate) async fn notify(
     notification_sender: Sender<NotificationEvent>,
     subscriber: Option<SubscriberUUri>,
@@ -271,4 +276,27 @@ pub(crate) async fn notify(
         // Not returning an error here, as update notification is not a core concern wrt the actual subscription management
         warn!("Error sending subscription-change update notification: {e}");
     };
+}
+
+// Convenience wrapper for resetting notification manager - returns all subscriber-topic notification registrations that were registered before the reset.
+// Might return an empty list if data retrieval fails for some reason, but will perform the reset in any case.
+pub(crate) async fn reset(
+    notification_sender: Sender<NotificationEvent>,
+) -> Result<HashMap<SubscriberUUri, TopicUUri>, Box<dyn std::error::Error>> {
+    // Get current notification registrations
+    let (respond_to, receive_from) = oneshot::channel::<HashMap<SubscriberUUri, TopicUUri>>();
+    notification_sender
+        .send(NotificationEvent::GetNotificationTopics { respond_to })
+        .await?;
+    #[allow(clippy::mutable_key_type)]
+    let notification_registrations = receive_from.await.unwrap_or_default();
+
+    // Do the reset
+    let (respond_to, receive_from) = oneshot::channel::<Result<(), PersistencyError>>();
+    notification_sender
+        .send(NotificationEvent::Reset { respond_to })
+        .await?;
+    let _ = receive_from.await?;
+
+    Ok(notification_registrations)
 }

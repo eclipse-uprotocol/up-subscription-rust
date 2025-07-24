@@ -52,6 +52,7 @@ pub(crate) mod handlers {
     pub(crate) mod fetch_subscribers;
     pub(crate) mod fetch_subscriptions;
     pub(crate) mod register_for_notifications;
+    pub(crate) mod reset;
     pub(crate) mod subscribe;
     pub(crate) mod unregister_for_notifications;
     pub(crate) mod unsubscribe;

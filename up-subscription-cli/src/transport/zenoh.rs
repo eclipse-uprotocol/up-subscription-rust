@@ -96,9 +96,16 @@ pub(crate) async fn get_zenoh_transport(
     zenoh_args: ZenohArgs,
 ) -> Result<Arc<dyn UTransport>, UStatus> {
     UPTransportZenoh::try_init_log_from_env();
-    Ok(
-        UPTransportZenoh::new(get_zenoh_config(zenoh_args), uri_provider.get_source_uri())
-            .await
-            .map(Arc::new)?,
-    )
+
+    let zenoh_builder = UPTransportZenoh::builder(uri_provider.get_authority())
+        .map_err(|e| UStatus::fail(e.get_message()))?;
+
+    let transport_zenoh: Arc<dyn UTransport> = zenoh_builder
+        .with_config(get_zenoh_config(zenoh_args))
+        .build()
+        .await
+        .map_err(|e| UStatus::fail(e.get_message()))
+        .map(Arc::new)?;
+
+    Ok(transport_zenoh)
 }

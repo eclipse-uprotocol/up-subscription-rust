@@ -88,7 +88,7 @@ impl SubscriptionsStore {
         }
     }
 
-    /// Add a new topic-subscriber relationship to persistent storage
+    /// Adds a new topic-subscriber relationship to persistent storage
     /// * any such relationship in this store implies a subscription state of SUBSCRIBED, except for remote topics (refer to `RemoteTopicsStore`)
     ///
     /// # Arguments
@@ -181,7 +181,7 @@ impl SubscriptionsStore {
         Ok(false)
     }
 
-    /// Return a list of all subscribers of given topic
+    /// Returns a list of all subscribers of given topic
     /// * returns `Vec<SubscriberUUri>` that contains all subscriber UUris registered for the topic
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
     pub(crate) fn get_topic_subscribers(
@@ -209,7 +209,7 @@ impl SubscriptionsStore {
         Ok(subscribers)
     }
 
-    /// Return a list of all topics subscribed to by given subscriber
+    /// Returns a list of all topics subscribed to by given subscriber
     /// * returns `Vec<TopicUUri>` that contains all topics subscribed to by subscriber
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
     pub(crate) fn get_subscriber_topics(
@@ -236,7 +236,9 @@ impl SubscriptionsStore {
         Ok(result_subs)
     }
 
-    // Return a flattened list of all subscriptions stored in persistency
+    /// Returns a flattened list of all subscriptions stored in persistency
+    /// * returns `Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)` that contains all subscribers and their associated subscription topics
+    /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
     pub(crate) fn get_flattened_subscriptions(
         &mut self,
     ) -> Result<Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)>, PersistencyError> {
@@ -296,6 +298,26 @@ impl SubscriptionsStore {
 
         // return remaining subscription entries (all entries with expiration timestamp in the future)
         Ok(expiring_subscriptions)
+    }
+
+    /// Clears the subscription database
+    // [impl->req~usubscription-reset~1]
+    pub(crate) fn reset(&mut self) -> Result<(), PersistencyError> {
+        let keys = self.persistency.get_all();
+        for key in keys {
+            self.persistency.rem(&key).map_err(|e| {
+                PersistencyError::internal_error(format!(
+                    "Error removing subscription entries from persistency {e}"
+                ))
+            })?;
+        }
+        self.persistency.dump().map_err(|e| {
+            PersistencyError::internal_error(format!(
+                "Error dumping cleared subscription data to persistency {e}"
+            ))
+        })?;
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -378,7 +400,7 @@ impl RemoteTopicsStore {
         }
     }
 
-    /// Get subscription state of topic
+    /// Returns subscription state of topic
     /// * returns `Ok(Some(TopicState))` (with current TopicState value) if topic exists in store, otherwise returns `Ok(None)`
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
     pub(crate) fn get_topic_state(
@@ -404,7 +426,7 @@ impl RemoteTopicsStore {
         })
     }
 
-    /// Update subscription state of topic in remote-topics store
+    /// Updates subscription state of topic in remote-topics store
     /// * returns `Ok(TopicState)` (with updated TopicState value) if state update is successful
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
     pub(crate) fn set_topic_state(
@@ -426,7 +448,7 @@ impl RemoteTopicsStore {
         Ok(state)
     }
 
-    /// Get subscription state of remote topic, or adds new remote-topic with state TopicState::SUBSCRIBE_PENDING if topic is new
+    /// Returns subscription state of remote topic, or adds new remote-topic with state TopicState::SUBSCRIBE_PENDING if topic is new
     /// * returns `Ok(TopicState)` (where TopicState is the new topic state)
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
     pub(crate) fn add_topic_or_get_state(
@@ -452,6 +474,26 @@ impl RemoteTopicsStore {
             // [impl->req~usubscription-subscribe-remote-pending~1]
             self.set_topic_state(topic, TopicState::SUBSCRIBE_PENDING)?
         })
+    }
+
+    /// Clears the remote subscriptions database
+    // [impl->req~usubscription-reset~1]
+    pub(crate) fn reset(&mut self) -> Result<(), PersistencyError> {
+        let keys = self.persistency.get_all();
+        for key in keys {
+            self.persistency.rem(&key).map_err(|e| {
+                PersistencyError::internal_error(format!(
+                    "Error removing remote subscriptions from persistency {e}"
+                ))
+            })?;
+        }
+        self.persistency.dump().map_err(|e| {
+            PersistencyError::internal_error(format!(
+                "Error dumping cleared remote subscription data to persistency {e}"
+            ))
+        })?;
+
+        Ok(())
     }
 
     #[cfg(test)]
@@ -505,7 +547,7 @@ impl NotificationStore {
         }
     }
 
-    /// Add subscriber to custom-notifications store
+    /// Adds subscriber to custom-notifications store
     /// * return `Ok(())` on success
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
     pub(crate) fn add_notifyee(
@@ -526,7 +568,7 @@ impl NotificationStore {
             })
     }
 
-    /// Remove subscriber from custom-notifications store
+    /// Removes subscriber from custom-notifications store
     /// * return `Ok(())` on success
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
     pub(crate) fn remove_notifyee(
@@ -544,7 +586,7 @@ impl NotificationStore {
         Ok(())
     }
 
-    /// Get a list of all topic keys from custom notification persistency
+    /// Returns a list of all topic keys from custom notification persistency
     /// * return a `Vec<TopicUUri>` list of topic UUris
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
     pub(crate) fn get_topics(&mut self) -> Result<Vec<TopicUUri>, PersistencyError> {
@@ -563,7 +605,26 @@ impl NotificationStore {
         Ok(result)
     }
 
-    #[cfg(test)]
+    /// Clears the notifications database
+    // [impl->req~usubscription-reset~1]
+    pub(crate) fn reset(&mut self) -> Result<(), PersistencyError> {
+        let keys = self.persistency.get_all();
+        for key in keys {
+            self.persistency.rem(&key).map_err(|e| {
+                PersistencyError::internal_error(format!(
+                    "Error removing notification entries from persistency {e}"
+                ))
+            })?;
+        }
+        self.persistency.dump().map_err(|e| {
+            PersistencyError::internal_error(format!(
+                "Error dumping cleared notifications to persistency {e}"
+            ))
+        })?;
+
+        Ok(())
+    }
+
     pub(crate) fn get_data(
         &self,
     ) -> Result<HashMap<SubscriberUUri, TopicUUri>, Box<dyn std::error::Error>> {
@@ -666,4 +727,85 @@ fn validate_and_append_filename(dir: &PathBuf, filename: &str) -> Result<PathBuf
     }
 
     Ok(full_path)
+}
+
+#[cfg(test)]
+mod tests {
+    // These are tests just for locally used helper functions. More complex and complete tests of the persistency
+    // manager business logic are located in tests/persistency_tests.rs
+
+    use super::*;
+    use crate::test_lib::{self};
+    use test_case::test_case;
+
+    #[test_case(test_lib::helpers::subscriber_uri1(), &[10, 5, 76, 79, 67, 65, 76, 16, 128, 32, 24, 1, 32, 128, 32]; "Subscriber UUri")]
+    #[test_case(test_lib::helpers::local_topic1_uri(), &[10, 5, 76, 79, 67, 65, 76, 16, 128, 128, 64, 24, 1, 32, 199, 149, 2]; "Local UUri")]
+    #[test_case(test_lib::helpers::remote_topic1_uri(), &[10, 6, 82, 69, 77, 79, 84, 69, 16, 128, 160, 1, 24, 1, 32, 128, 64]; "Remote UUri")]
+    #[test_case(UUri::default(), &[]; "Empty UUri")]
+    #[tokio::test]
+    async fn test_serialize_deserialize_uuri(uri: UUri, bytes: &[u8]) {
+        helpers::init_once();
+
+        // To bytes
+        let serialized_bytes = serialize_uuri(&uri);
+        assert!(serialized_bytes.is_ok());
+
+        let serialized_bytes = serialized_bytes.unwrap();
+        assert_eq!(serialized_bytes, bytes);
+
+        // and back
+        let reconstructed_uri = deserialize_uuri(&serialized_bytes);
+        assert!(reconstructed_uri.is_ok());
+
+        let reconstructed_uri = reconstructed_uri.unwrap();
+        assert_eq!(reconstructed_uri, uri);
+    }
+
+    #[test_case(TopicState::UNSUBSCRIBED, &[0,0,0,0]; "State UNSUBSCRIBED")]
+    #[test_case(TopicState::SUBSCRIBE_PENDING, &[1,0,0,0]; "State SUBSCRIBE_PENDING")]
+    #[test_case(TopicState::SUBSCRIBED, &[2,0,0,0]; "State SUBSCRIBED")]
+    #[test_case(TopicState::UNSUBSCRIBE_PENDING, &[3,0,0,0]; "State UNSUBSCRIBE_PENDING")]
+    #[tokio::test]
+    async fn test_serialize_deserialize_topic_state(state: TopicState, bytes: &[u8]) {
+        helpers::init_once();
+
+        // One way...
+        let serialized_bytes = serialize_topic_state(&state);
+        assert!(serialized_bytes.is_ok());
+
+        let serialized_bytes = serialized_bytes.unwrap();
+        assert_eq!(bytes, serialized_bytes);
+
+        // ... then the other
+        let reconstructed_state = deserialize_topic_state(bytes);
+        assert!(reconstructed_state.is_ok());
+
+        let reconstructed_state = reconstructed_state.unwrap();
+        assert_eq!(reconstructed_state, state);
+    }
+
+    #[tokio::test]
+    async fn test_validate_and_append_filename_success() {
+        helpers::init_once();
+
+        let mut expected = PathBuf::from(".");
+        expected.push("newfile");
+
+        let r = validate_and_append_filename(&PathBuf::from("."), "newfile");
+        assert!(r.is_ok());
+        assert_eq!(r.unwrap().as_os_str(), expected.as_os_str());
+    }
+
+    #[test_case("."; "Relative path 1")]
+    #[test_case(".."; "Relative path 2")]
+    #[test_case( "\\"; "Relative path 3")]
+    #[test_case( ""; "Empty filename")]
+    #[test_case( "/dummy/newfile"; "Random path and name")]
+    #[tokio::test]
+    async fn test_validate_and_append_filename_relative_paths(file: &str) {
+        helpers::init_once();
+
+        let r = validate_and_append_filename(&PathBuf::from("."), file);
+        assert!(r.is_err());
+    }
 }
