@@ -188,11 +188,7 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ServiceInvocationError::InvalidArgument(_) => {}
-            _ => panic!("Wrong error type"),
-        }
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
     #[tokio::test]
@@ -217,11 +213,7 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ServiceInvocationError::InvalidArgument(_) => {}
-            _ => panic!("Wrong error type"),
-        }
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
     #[tokio::test]
@@ -243,11 +235,7 @@ mod tests {
             .handle_request(RESOURCE_ID_FETCH_SUBSCRIBERS, &message_attributes, None)
             .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ServiceInvocationError::InvalidArgument(_) => {}
-            _ => panic!("Wrong error type"),
-        }
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
     #[tokio::test]
@@ -276,11 +264,7 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ServiceInvocationError::InvalidArgument(_) => {}
-            _ => panic!("Wrong error type"),
-        }
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
     // [utest->dsn~usubscription-fetch-subscribers-invalid-topic~1]
@@ -330,10 +314,6 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ServiceInvocationError::InvalidArgument(_) => {}
-            _ => panic!("Wrong error type"),
-        }
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 }
