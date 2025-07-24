@@ -317,10 +317,6 @@ mod tests {
             )
             .await;
 
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ServiceInvocationError::InvalidArgument(_) => {}
-            _ => panic!("Wrong error type"),
-        }
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_)));
     }
 }
