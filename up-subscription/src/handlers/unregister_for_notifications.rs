@@ -46,12 +46,26 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
         // [impl->dsn~usubscription-unregister-notifications-protobuf~1]
-        let (_subscription_request, source) = helpers::extract_inputs::<NotificationsRequest>(
+        let (notification_request, source) = helpers::extract_inputs::<NotificationsRequest>(
             RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
             resource_id,
             &request_payload,
             message_attributes,
         )?;
+
+        let Some(topic) = notification_request.topic.as_ref() else {
+            return Err(ServiceInvocationError::InvalidArgument(
+                "No topic defined in request".to_string(),
+            ));
+        };
+
+        // [impl->dsn~usubscription-unregister-notifications-invalid-topic~1]
+        helpers::validate_uri(topic).map_err(|e| {
+            ServiceInvocationError::InvalidArgument(format!("Invalid topic uri '{topic}': {e}"))
+        })?;
+
+        // TODO: can/should we actually use the topic alongside the subscriber, for notification-removal?
+        //       UGH - this entire notifications storage thing doesn't work, can only store one topic per subscriber atm. Needs fixed...
 
         // Interact with notification manager backend
         let se = NotificationEvent::RemoveNotifyee {
@@ -78,7 +92,11 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+    use test_case::test_case;
     use tokio::sync::mpsc::{self};
+
+    use up_rust::UUri;
 
     use crate::{helpers, tests::test_lib};
 
@@ -229,6 +247,40 @@ mod tests {
         let result = request_handler
             .handle_request(
                 RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
+                &message_attributes,
+                Some(request_payload),
+            )
+            .await;
+
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
+    }
+
+    // [utest->dsn~usubscription-unregister-notifications-invalid-topic~1]
+    #[test_case("up:/0/0/0"; "Bad topic UUri")]
+    #[test_case("up://*/100000/1/8AC7"; "Wildcard authority in topic UUri")]
+    #[test_case("up://LOCAL/FFFF0000/1/8AC7"; "Wildcard entity id in topic UUri")]
+    #[test_case("up://LOCAL/100000/1/FFFF"; "Wildcard resource id in topic UUri")]
+    #[tokio::test]
+    async fn test_invalid_topic_uri(topic: &str) {
+        helpers::init_once();
+
+        // create request and other required object(s)
+        let topic = UUri::from_str(topic).expect("Test parameter UUri failed to parse");
+        // create request and other required object(s)
+        let subscribe_request = test_lib::helpers::subscription_request(topic, None);
+        let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+        let (subscription_sender, _) = mpsc::channel::<NotificationEvent>(1);
+
+        // create handler and perform tested operation
+        let request_handler = UnregisterNotificationsRequestHandler::new(subscription_sender);
+
+        let result = request_handler
+            .handle_request(
+                up_rust::core::usubscription::RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
                 &message_attributes,
                 Some(request_payload),
             )

@@ -58,6 +58,11 @@ impl RequestHandler for UnubscribeRequestHandler {
             ));
         };
 
+        // [impl->dsn~usubscription-unsubscribe-invalid-topic~1]
+        helpers::validate_uri(topic).map_err(|e| {
+            ServiceInvocationError::InvalidArgument(format!("Invalid topic uri '{topic}': {e}"))
+        })?;
+
         let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
         let se = SubscriptionEvent::RemoveSubscription {
             subscriber: source.clone(),
@@ -91,8 +96,11 @@ impl RequestHandler for UnubscribeRequestHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
+    use test_case::test_case;
     use tokio::sync::mpsc::{self};
-    use up_rust::core::usubscription::State;
+
+    use up_rust::{core::usubscription::State, UUri};
 
     use crate::{helpers, tests::test_lib};
 
@@ -251,6 +259,39 @@ mod tests {
         let result = request_handler
             .handle_request(
                 RESOURCE_ID_UNSUBSCRIBE,
+                &message_attributes,
+                Some(request_payload),
+            )
+            .await;
+
+        assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
+    }
+
+    // [utest->dsn~usubscription-unsubscribe-invalid-topic~1]
+    #[test_case("up:/0/0/0"; "Bad topic UUri")]
+    #[test_case("up://*/100000/1/8AC7"; "Wildcard authority in topic UUri")]
+    #[test_case("up://LOCAL/FFFF0000/1/8AC7"; "Wildcard entity id in topic UUri")]
+    #[test_case("up://LOCAL/100000/1/FFFF"; "Wildcard resource id in topic UUri")]
+    #[tokio::test]
+    async fn test_invalid_topic_uri(topic: &str) {
+        helpers::init_once();
+
+        // create request and other required object(s)
+        let topic = UUri::from_str(topic).expect("Test parameter UUri failed to parse");
+        let subscribe_request = test_lib::helpers::subscription_request(topic, None);
+        let request_payload = UPayload::try_from_protobuf(subscribe_request.clone()).unwrap();
+        let message_attributes = UAttributes {
+            source: Some(test_lib::helpers::subscriber_uri1()).into(),
+            ..Default::default()
+        };
+        let (subscription_sender, _) = mpsc::channel::<SubscriptionEvent>(1);
+
+        // create handler and perform tested operation
+        let request_handler = UnubscribeRequestHandler::new(subscription_sender);
+
+        let result = request_handler
+            .handle_request(
+                up_rust::core::usubscription::RESOURCE_ID_UNSUBSCRIBE,
                 &message_attributes,
                 Some(request_payload),
             )
