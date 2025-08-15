@@ -13,6 +13,9 @@
     "mounts": [
         "source=rust-volume,target=/rust-volume,type=volume"
     ],
+    "containerEnv": {
+        "WORKSPACE_FOLDER": "${containerWorkspaceFolder}"
+    },
     "postCreateCommand": "sudo .devcontainer/post-create.sh",
     "customizations": {
         "vscode": {
