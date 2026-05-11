@@ -11,7 +11,9 @@
 # SPDX-License-Identifier: Apache-2.0
 ################################################################################
 
-FROM rust:slim as build
+FROM rust:trixie AS build
+
+RUN apt-get update && apt-get install -y cmake && rm -rf /var/lib/apt/lists/*
 
 # create a new empty shell project
 RUN USER=root mkdir /up-subscription-rust
