@@ -38,4 +38,4 @@ ADD tools/startup.sh /
 RUN chmod +x /startup.sh
 
 # set the startup command to run your binary
-ENTRYPOINT ["/startup.sh"]
+ENTRYPOINT ["/up-subscription-cli"]
