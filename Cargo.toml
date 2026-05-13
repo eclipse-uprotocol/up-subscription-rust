@@ -65,3 +65,4 @@ install-updater = false
 [profile.dist]
 inherits = "release"
 lto = "thin"
+overflow-checks = true

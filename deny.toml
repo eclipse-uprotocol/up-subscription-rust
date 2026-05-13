@@ -25,3 +25,8 @@ allow = ["Apache-2.0", "BSD-2-Clause", "MIT", "Unicode-3.0"]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[advisories]
+ignore = [
+    "RUSTSEC-2026-0007", # We perform integer overflow checks also in release builds
+]
