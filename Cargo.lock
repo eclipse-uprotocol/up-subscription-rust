@@ -4079,6 +4079,7 @@ dependencies = [
 name = "up-subscription-cli"
 version = "0.4.0"
 dependencies = [
+ "backon",
  "clap",
  "serde_json",
  "tokio",
