@@ -32,11 +32,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macOS-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@master
         with: 
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
       - name: Install cargo-all-features
         run: |
             cargo install cargo-all-features
@@ -65,11 +65,11 @@ jobs:
   #       os: [ubuntu-latest, windows-latest, macOS-latest]
   #       feature-flags: ["", "--no-default-features", "--all-features"]
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
   #     - uses: dtolnay/rust-toolchain@master
   #       with: 
   #         toolchain: ${{ env.RUST_TOOLCHAIN }}
-  #     - uses: Swatinem/rust-cache@v2
+  #     - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
   #     - uses: taiki-e/install-action@nextest
   #     - name: Run cargo nextest
   #       run: |
