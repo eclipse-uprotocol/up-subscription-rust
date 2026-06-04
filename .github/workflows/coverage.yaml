@@ -43,13 +43,13 @@ jobs:
     outputs:
       test_coverage_url: ${{ steps.test_coverage_html.outputs.artifact-url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@master
         with: 
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@cargo-tarpaulin
-      - uses: Swatinem/rust-cache@v2
+        uses: taiki-e/install-action@0b437bc1912aa07ed428164eda86a9f62a2ff775 # cargo-tarpaulin
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run tests and report code coverage
         run: |
@@ -57,19 +57,19 @@ jobs:
           RUSTC_BOOTSTRAP=1 cargo tarpaulin --package ${{ inputs.package || '"*"' }} -o xml -o lcov -o html --doc --tests
           
       - name: Upload coverage report (lcov)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: test_coverage_lcov
         with:
           name: code-coverage-lcov
           path: lcov.info
       - name: Upload coverage report (xml)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: test_coverage_xml
         with:
           name: code-coverage-xml
           path: cobertura.xml
       - name: Upload coverage report (html)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         id: test_coverage_html
         with:
           name: code-coverage-html
@@ -79,7 +79,7 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         if: env.CODECOV_TOKEN != ''
-        uses: codecov/codecov-action@v4.0.1
+        uses: codecov/codecov-action@e0b68c6749509c5f83f984dd99a76a1c1a231044 # v4.0.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: ${{ vars.GITHUB_REPOSITORY }}
