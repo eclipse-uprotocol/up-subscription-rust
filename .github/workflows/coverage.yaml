@@ -43,12 +43,12 @@ jobs:
     outputs:
       test_coverage_url: ${{ steps.test_coverage_html.outputs.artifact-url }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: dtolnay/rust-toolchain@master
         with: 
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@0b437bc1912aa07ed428164eda86a9f62a2ff775 # cargo-tarpaulin
+        uses: taiki-e/install-action@f28101ece534913c4821678e3dd47f1ee8eba4e2 # cargo-tarpaulin
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run tests and report code coverage
