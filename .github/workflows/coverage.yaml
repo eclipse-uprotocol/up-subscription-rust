@@ -48,8 +48,8 @@ jobs:
         with: 
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-tarpaulin
-        uses: taiki-e/install-action@f28101ece534913c4821678e3dd47f1ee8eba4e2 # cargo-tarpaulin
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: taiki-e/install-action@8876dffef29a4b495c20de3f1a396053a3b0851a # cargo-tarpaulin
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Run tests and report code coverage
         run: |
