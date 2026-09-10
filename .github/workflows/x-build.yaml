@@ -60,7 +60,7 @@ jobs:
           targets: "${{ matrix.target }}"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Using nextest because it's faster than built-in test
-      - uses: taiki-e/install-action@b5c73bb82f2ad2b0f63804f6a057b567a4f54a2d # nextest
+      - uses: taiki-e/install-action@6d7ea3ee4000cadd654f6bd50c17380bfa413696 # nextest
      
       - name: Run cargo nextest
         run: |
