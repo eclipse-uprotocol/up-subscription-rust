@@ -51,16 +51,16 @@ jobs:
             target: aarch64-apple-darwin
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
      
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: "${{ matrix.target }}"
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Using nextest because it's faster than built-in test
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@290d96bf7f78278289e6958c5d67aaadd4b0afc8 # nextest
      
       - name: Run cargo nextest
         run: |
