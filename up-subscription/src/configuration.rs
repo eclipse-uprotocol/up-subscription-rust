@@ -41,7 +41,7 @@ impl std::fmt::Display for ConfigurationError {
 
 impl std::error::Error for ConfigurationError {}
 
-// only accept persistency path if it points to an existing directory; if None set to cwd
+// only accept persistency path if it points to an existing directory; if None, set to current working directory
 fn get_storage_path(path: Option<String>) -> Result<PathBuf, ConfigurationError> {
     match path {
         None => Ok(std::env::current_dir().map_err(|e| {
@@ -100,7 +100,7 @@ impl USubscriptionConfiguration {
         persistency_enabled: bool,
         persistency_path: Option<String>,
     ) -> Result<USubscriptionConfiguration, ConfigurationError> {
-        let authority_name = UUri::verify_authority(authority_name.as_str())
+        UUri::verify_authority(authority_name.as_str())
             .map_err(|e| ConfigurationError::new(format!("Invalid authority name: {e}")))?;
 
         Ok(USubscriptionConfiguration {
@@ -124,7 +124,7 @@ impl LocalUriProvider for USubscriptionConfiguration {
     fn get_resource_uri(&self, resource_id: u16) -> up_rust::UUri {
         UUri::try_from_parts(
             &self.authority_name,
-            USUBSCRIPTION_TYPE_ID,
+            USUBSCRIPTION_TYPE_ID as u32,
             USUBSCRIPTION_VERSION_MAJOR,
             resource_id,
         )
@@ -133,7 +133,7 @@ impl LocalUriProvider for USubscriptionConfiguration {
     fn get_source_uri(&self) -> up_rust::UUri {
         UUri::try_from_parts(
             &self.authority_name,
-            USUBSCRIPTION_TYPE_ID,
+            USUBSCRIPTION_TYPE_ID as u32,
             USUBSCRIPTION_VERSION_MAJOR,
             0x0, // source UUri resource ID is mandated to be 0
         )

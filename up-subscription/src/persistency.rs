@@ -11,30 +11,42 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use pickledb::{PickleDb, PickleDbDumpPolicy, SerializationMethod};
-use protobuf::Enum;
-use serde::de::Error;
+use redb::{
+    Database, MultimapTableDefinition, ReadableDatabase, ReadableMultimapTable, ReadableTable,
+    TableDefinition,
+};
+use redb_derive::{Key, Value};
+#[cfg(test)]
 use std::collections::HashMap;
-use std::{convert::TryInto, path::PathBuf};
+use std::{
+    path::PathBuf,
+    time::{Duration, SystemTime},
+};
 
-use up_rust::{core::usubscription::State as TopicState, UUri};
+use up_rust::{communication::SubscriptionStatus, core::usubscription::SubscriptionInfo, UUri};
 
 use crate::{
-    helpers,
-    usubscription::{ExpiryTimestamp, SubscriberUUri, TopicUUri},
+    usubscription::{SubscriberUUri, TopicUUri},
     USubscriptionConfiguration,
 };
+
+// We are using SubscriptionInfo in this module to represent subscription-related information - although in the context of
+// Persistency, the existence of a subscription record autmatically implies SubscriptionStatus::Subscribed, which means that
+// the status field of SubscriptionInfo is redundant.
 
 // Whether to include 'up:' in serialized UUris
 const PERSIST_UP_SCHEMA: bool = true;
 
-// For better code clarity
-type SubscriberAsString = String;
-type SerializedTopicState = u8;
-
-#[allow(dead_code)] // I have no idea why clippy insists on this here - this type is most definitely being used...
-pub(crate) type SubscriptionSet =
-    HashMap<TopicUUri, HashMap<SubscriberUUri, Option<ExpiryTimestamp>>>;
+// canonical relationship storage: (subscriber, topic) -> metadata
+const SUBSCRIPTIONS: TableDefinition<SubscriptionKey, SubscriptionMetadata> =
+    TableDefinition::new("subscriptions");
+// reverse index: topic -> subscriber (existence only, no duplicated metadata)
+const TOPIC_INDEX: MultimapTableDefinition<&str, &str> =
+    MultimapTableDefinition::new("subscriber_index");
+// for keeping track of the special states of remote topics (SubscribePending, UnsubsribePending)
+const REMOTE_TOPICS: TableDefinition<&str, u8> = TableDefinition::new("remote_topics");
+// uProtocol entities that registered to directly receive subscription-related notifications
+const NOTIFICATIONS: TableDefinition<&str, ()> = TableDefinition::new("notifications");
 
 #[derive(Debug)]
 pub(crate) enum PersistencyError {
@@ -69,23 +81,74 @@ impl std::fmt::Display for PersistencyError {
 
 impl std::error::Error for PersistencyError {}
 
+// helper function to make redb error mapping a bit more legible
+fn internal_err<E: std::fmt::Display>(e: E) -> PersistencyError {
+    PersistencyError::internal_error(e.to_string())
+}
+
+#[derive(Debug, Key, Value, PartialEq, Eq, PartialOrd, Ord, Clone)]
+struct SubscriptionKey {
+    subscriber: String,
+    topic: String,
+}
+
+#[derive(Debug, Value, Clone, Copy, PartialEq, Eq)]
+struct SubscriptionMetadata {
+    // Option<u128> is one of redb's built-in impls - using nanosecond precision
+    // to be able to recreate timestamps exactly as they were persisted.
+    expiration_nanos: Option<u128>,
+    sample_period_nanos: Option<u128>,
+}
+
+impl SubscriptionMetadata {
+    fn new(expiration: Option<SystemTime>, sample_period: Option<Duration>) -> Self {
+        Self {
+            expiration_nanos: expiration.map(|t| {
+                t.duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            }),
+            sample_period_nanos: sample_period.map(|d| d.as_nanos()),
+        }
+    }
+
+    fn expiration(&self) -> Option<SystemTime> {
+        self.expiration_nanos
+            .map(|ms| SystemTime::UNIX_EPOCH + Duration::from_nanos_u128(ms))
+    }
+
+    fn sample_period(&self) -> Option<Duration> {
+        self.sample_period_nanos.map(Duration::from_nanos_u128)
+    }
+}
+
 /// Persistent store for tracking subscriber-topic relationships
 pub(crate) struct SubscriptionsStore {
-    persistency: PickleDb,
+    persistency: Database,
 }
 
 // [impl->req~usubscription-subscribe-persistency~1]
 impl SubscriptionsStore {
     const SUBSCRIPTION_STORE_NAME: &str = ".subscriptions.store";
 
-    pub(crate) fn new(configuration: &USubscriptionConfiguration) -> SubscriptionsStore {
-        SubscriptionsStore {
-            persistency: get_store(
-                SubscriptionsStore::SUBSCRIPTION_STORE_NAME.to_string(),
-                configuration.persistency_path.clone(),
-                configuration.persistency_enabled,
-            ),
-        }
+    pub(crate) fn new(
+        configuration: &USubscriptionConfiguration,
+    ) -> Result<SubscriptionsStore, PersistencyError> {
+        let persistency = get_store(
+            SubscriptionsStore::SUBSCRIPTION_STORE_NAME.to_string(),
+            configuration.persistency_path.clone(),
+            configuration.persistency_enabled,
+        );
+
+        // open tables, iniates table creation if necessary
+        let write_txn = persistency.begin_write().map_err(internal_err)?;
+        write_txn.open_table(SUBSCRIPTIONS).map_err(internal_err)?;
+        write_txn
+            .open_multimap_table(TOPIC_INDEX)
+            .map_err(internal_err)?;
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(SubscriptionsStore { persistency })
     }
 
     /// Adds a new topic-subscriber relationship to persistent storage
@@ -95,52 +158,57 @@ impl SubscriptionsStore {
     ///
     /// * `subscriber` - UUri of the topic subscriber.
     /// * `topic` - UUri of the topic that is being subscribed.
-    /// * `expires` - Optional subscription expiration time - in milliseconds since Unix epoch (1970-01-01)
+    /// * `expiration` - Optional subscription expiration time.
+    /// * `sample_period` - Optional minimum duration between two events.
     ///
     /// # Returns
     ///
-    /// * returns `Ok(true)` if this is the first subscription to this topic, `Ok(false)` otherwise
+    /// * returns `Ok(true)` if this was the first subscriber to the topic, `Ok(false)` otherwise
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
     pub(crate) fn add_subscription(
         &mut self,
         subscriber: &SubscriberUUri,
         topic: &TopicUUri,
-        expiry: Option<ExpiryTimestamp>,
+        expiration: Option<SystemTime>,
+        sample_period: Option<Duration>,
     ) -> Result<bool, PersistencyError> {
         // serialize inputs to types used in persistency
-        let subscriber_string = &subscriber.to_uri(PERSIST_UP_SCHEMA);
-        let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
+        let subscriber_string = subscriber.to_uri(PERSIST_UP_SCHEMA);
+        let topic_string = topic.to_uri(PERSIST_UP_SCHEMA);
+        let metadata = SubscriptionMetadata::new(expiration, sample_period);
 
-        Ok(
-            // [impl->req~usubscription-subscribe-multiple~1]
-            if let Some(mut subscriber_list) = self
-                .persistency
-                .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
-            {
-                // [impl->req~usubscription-subscribe-expiration-extension~1]
-                subscriber_list.insert(subscriber_string.clone(), expiry);
-                self.persistency
-                    .set(topic_string, &subscriber_list)
-                    .map_err(|e| {
-                        PersistencyError::internal_error(format!(
-                            "Error updating topic-subscriber list {e}"
-                        ))
-                    })?;
-                false
-            } else {
-                self.persistency
-                    .set(
-                        topic_string,
-                        &HashMap::from([(subscriber_string.clone(), expiry)]),
-                    )
-                    .map_err(|e| {
-                        PersistencyError::internal_error(format!(
-                            "Error adding new topic-subscriber {e}"
-                        ))
-                    })?;
-                true
-            },
-        )
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        let is_first_subscriber = {
+            // write reverse-index table (first, so we don't have to clone the Strings)
+            let mut topic_index = write_txn
+                .open_multimap_table(TOPIC_INDEX)
+                .map_err(internal_err)?;
+            // check if this is the first subscription to `topic``
+            let is_first_subscriber = topic_index
+                .get(topic_string.as_str())
+                .map_err(internal_err)?
+                .next()
+                .is_none();
+            topic_index
+                .insert(topic_string.as_str(), subscriber_string.as_str())
+                .map_err(internal_err)?;
+
+            // write the primary database entry
+            let key = SubscriptionKey {
+                subscriber: subscriber_string,
+                topic: topic_string,
+            };
+            write_txn
+                .open_table(SUBSCRIPTIONS)
+                .map_err(internal_err)?
+                .insert(key, metadata)
+                .map_err(internal_err)?;
+
+            is_first_subscriber
+        };
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(is_first_subscriber)
     }
 
     /// Removes a topic-subscriber combination from persistent storage
@@ -152,33 +220,40 @@ impl SubscriptionsStore {
         topic: &TopicUUri,
     ) -> Result<bool, PersistencyError> {
         // serialize inputs to types used in persistency
-        let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
-        let subscriber_string = &subscriber.to_uri(PERSIST_UP_SCHEMA);
+        let topic_string = topic.to_uri(PERSIST_UP_SCHEMA);
+        let subscriber_string = subscriber.to_uri(PERSIST_UP_SCHEMA);
 
-        if let Some(mut subscriber_list) = self
-            .persistency
-            .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
-        {
-            subscriber_list.remove(subscriber_string);
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        let was_last_subscriber = {
+            // write reverse-index table (first, so we don't have to clone the Strings)
+            let mut topic_index = write_txn
+                .open_multimap_table(TOPIC_INDEX)
+                .map_err(internal_err)?;
+            topic_index
+                .remove(topic_string.as_str(), subscriber_string.as_str())
+                .map_err(internal_err)?;
+            let was_last_subscriber = topic_index
+                .get(topic_string.as_str())
+                .map_err(internal_err)?
+                .next()
+                .is_none();
 
-            if subscriber_list.is_empty() {
-                let _r = self.persistency.rem(topic_string).map_err(|e| {
-                    PersistencyError::internal_error(format!(
-                        "Error removing topic-subscriber list {e}"
-                    ))
-                })?;
-                return Ok(true);
-            } else {
-                self.persistency
-                    .set(topic_string, &subscriber_list)
-                    .map_err(|e| {
-                        PersistencyError::internal_error(format!(
-                            "Error storing updated topic-subscriber list {e}"
-                        ))
-                    })?;
-            }
+            // write the primary database entry
+            let key = SubscriptionKey {
+                topic: topic_string,
+                subscriber: subscriber_string,
+            };
+            write_txn
+                .open_table(SUBSCRIPTIONS)
+                .map_err(internal_err)?
+                .remove(key)
+                .map_err(internal_err)?;
+
+            was_last_subscriber
         };
-        Ok(false)
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(was_last_subscriber)
     }
 
     /// Returns a list of all subscribers of given topic
@@ -191,20 +266,27 @@ impl SubscriptionsStore {
         let topic_string = &topic.to_uri(PERSIST_UP_SCHEMA);
         let mut subscribers = vec![];
 
-        // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
-        // the remote topic is already fully SUBSCRIBED, of still SUSBCRIBED_PENDING
-        if let Some(list) = self
-            .persistency
-            .get::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(topic_string)
+        let read_txn = self.persistency.begin_read().map_err(internal_err)?;
         {
-            for entry in list.keys() {
-                subscribers.push(UUri::try_from(entry.clone()).map_err(|e| {
+            let topic_index = read_txn
+                .open_multimap_table(TOPIC_INDEX)
+                .map_err(internal_err)?;
+
+            // This will get *every* client that subscribed to `topic` - no matter whether (in the case of remote subscriptions)
+            // the remote topic is already fully SUBSCRIBED, or still SUBSCRIBE_PENDING
+            for entry in topic_index
+                .get(topic_string.as_str())
+                .map_err(internal_err)?
+            {
+                let subscriber_string = entry.map_err(internal_err)?.value().to_string();
+                subscribers.push(UUri::try_from(subscriber_string).map_err(|e| {
                     PersistencyError::serialization_error(format!(
                         "Error deserializing subscriber uri {e}"
                     ))
                 })?);
             }
-        }
+        };
+        read_txn.close().map_err(internal_err)?;
 
         Ok(subscribers)
     }
@@ -212,63 +294,104 @@ impl SubscriptionsStore {
     /// Returns a list of all topics subscribed to by given subscriber
     /// * returns `Vec<TopicUUri>` that contains all topics subscribed to by subscriber
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
+    #[allow(dead_code)] // Keeping this method intentionally, even it's not used at the moment
     pub(crate) fn get_subscriber_topics(
         &self,
         subscriber: &SubscriberUUri,
     ) -> Result<Vec<TopicUUri>, PersistencyError> {
-        let subscriber_string = &subscriber.to_uri(PERSIST_UP_SCHEMA);
-        let mut result_subs: Vec<TopicUUri> = Vec::new();
+        let subscriber_string = subscriber.to_uri(PERSIST_UP_SCHEMA);
+        let mut topics: Vec<TopicUUri> = Vec::new();
 
-        for entry in self.persistency.iter() {
-            if let Some(subscribers) =
-                entry.get_value::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>()
-            {
-                if subscribers.contains_key(subscriber_string) {
-                    result_subs.push(UUri::try_from(entry.get_key()).map_err(|e| {
-                        PersistencyError::serialization_error(format!(
-                            "Error deserializing topic uri {e}"
-                        ))
-                    })?);
+        let read_txn = self.persistency.begin_read().map_err(internal_err)?;
+        {
+            let table = read_txn.open_table(SUBSCRIPTIONS).map_err(internal_err)?;
+
+            // subscriber-major key ordering lets us range-scan instead of a full table scan
+            let start = SubscriptionKey {
+                subscriber: subscriber_string.clone(),
+                topic: String::new(),
+            };
+            for entry in table.range(start..).map_err(internal_err)? {
+                let (key, _) = entry.map_err(internal_err)?;
+                let key = key.value();
+                if key.subscriber != subscriber_string {
+                    break; // moved past this subscriber's range
                 }
+                topics.push(UUri::try_from(key.topic).map_err(|e| {
+                    PersistencyError::serialization_error(format!(
+                        "Error deserializing topic uri {e}"
+                    ))
+                })?);
             }
-        }
+        };
+        read_txn.close().map_err(internal_err)?;
 
-        Ok(result_subs)
+        Ok(topics)
     }
 
-    /// Returns a flattened list of all subscriptions stored in persistency
-    /// * returns `Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)` that contains all subscribers and their associated subscription topics
+    /// Returns a list of all subscriptions stored in persistency
+    /// * returns `Vec<SubscriptionInfo>` that contains all subscribers and their associated subscription topics
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
-    pub(crate) fn get_flattened_subscriptions(
-        &mut self,
-    ) -> Result<Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)>, PersistencyError> {
-        let mut flattened_subscriptions: Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)> =
-            Vec::new();
+    pub(crate) fn get_all_subscriptions(&self) -> Result<Vec<SubscriptionInfo>, PersistencyError> {
+        let mut subscriptions: Vec<SubscriptionInfo> = Vec::new();
 
-        // Extract every subscription entry that carries an expiration timestamp value
-        for topic_subs in self.persistency.iter() {
-            if let Some(entry) =
-                topic_subs.get_value::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>()
-            {
-                for (subscriber, expiry) in entry.iter() {
-                    flattened_subscriptions.push((
-                        UUri::try_from(subscriber.clone()).map_err(|e| {
-                            PersistencyError::serialization_error(format!(
-                                "Error deserializing subscriber uri {e}"
-                            ))
-                        })?,
-                        UUri::try_from(topic_subs.get_key()).map_err(|e| {
-                            PersistencyError::serialization_error(format!(
-                                "Error deserializing subscriber uri {e}"
-                            ))
-                        })?,
-                        *expiry,
-                    ));
-                }
+        let read_txn = self.persistency.begin_read().map_err(internal_err)?;
+        {
+            let table = read_txn.open_table(SUBSCRIPTIONS).map_err(internal_err)?;
+
+            for entry in table.iter().map_err(internal_err)? {
+                let (key, value) = entry.map_err(internal_err)?;
+                let key = key.value();
+                let metadata = value.value();
+
+                let subscriber = UUri::try_from(key.subscriber).map_err(|e| {
+                    PersistencyError::serialization_error(format!(
+                        "Error deserializing subscriber uri {e}"
+                    ))
+                })?;
+                let topic = UUri::try_from(key.topic).map_err(|e| {
+                    PersistencyError::serialization_error(format!(
+                        "Error deserializing topic uri {e}"
+                    ))
+                })?;
+
+                subscriptions.push(SubscriptionInfo::new(
+                    topic,
+                    subscriber,
+                    SubscriptionStatus::Subscribed,
+                    metadata.expiration(),
+                    metadata.sample_period(),
+                ));
             }
-        }
+        };
+        read_txn.close().map_err(internal_err)?;
 
-        Ok(flattened_subscriptions)
+        Ok(subscriptions)
+    }
+
+    /// Returns all subscriptions whose topic and subscriber match the given filters
+    /// * `topic_filter`/`subscriber_filter` may be UUri patterns (containing wildcards), see [`UUri::matches`]
+    /// * a `None` filter matches every topic/subscriber
+    /// * returns `Vec<SubscriptionInfo>` for all matching subscriptions
+    /// * status is always reported as `Subscribed`, as this store only tracks local subscriptions - callers
+    ///   needing remote topic state must reconcile against `RemoteTopicsStore` themselves
+    /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
+    pub(crate) fn get_subscriptions_by_filter(
+        &self,
+        topic_filter: &Option<UUri>,
+        subscriber_filter: &Option<UUri>,
+    ) -> Result<Vec<SubscriptionInfo>, PersistencyError> {
+        let mut subcriptions = self.get_all_subscriptions()?;
+
+        // a `None` filter matches everything
+        subcriptions.retain(|sub| {
+            topic_filter.as_ref().is_none_or(|f| f.matches(sub.topic()))
+                && subscriber_filter
+                    .as_ref()
+                    .is_none_or(|f| f.matches(sub.subscriber()))
+        });
+
+        Ok(subcriptions)
     }
 
     /// This function does two things
@@ -277,127 +400,119 @@ impl SubscriptionsStore {
     // [impl->req~usubscription-subscribe-no-expiration~1]
     pub(crate) fn get_and_prune_expiring_subscriptions(
         &mut self,
-    ) -> Result<Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)>, PersistencyError> {
-        // Extract every subscription entry that carries an expiration timestamp value
-        let mut expiring_subscriptions: Vec<(SubscriberUUri, TopicUUri, ExpiryTimestamp)> = self
-            .get_flattened_subscriptions()?
-            .into_iter()
-            .filter_map(|(subscriber, topic, expiry)| expiry.map(|exp| (subscriber, topic, exp)))
-            .collect();
+    ) -> Result<Vec<(SubscriberUUri, TopicUUri, SystemTime)>, PersistencyError> {
+        let now = SystemTime::now();
+        let mut remaining = Vec::new();
 
-        // Remove every expiration-subscription entry that has already expired from persistency
-        expiring_subscriptions.retain(|(subscriber, topic, expiry)| {
-            if helpers::duration_until_timestamp(*expiry).is_none() {
-                // Timestamp expiry is in the past, so remove it from persistency,
-                let _ = self.remove_subscription(subscriber, topic);
-                false // and remove this entry from the collection
-            } else {
-                true // Keep this entry
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        {
+            let mut table = write_txn.open_table(SUBSCRIPTIONS).map_err(internal_err)?;
+            let mut topic_index = write_txn
+                .open_multimap_table(TOPIC_INDEX)
+                .map_err(internal_err)?;
+
+            // snapshot entries first: `table` can't be mutated while its iterator borrows it
+            let entries: Vec<(SubscriptionKey, SubscriptionMetadata)> = table
+                .iter()
+                .map_err(internal_err)?
+                .map(|entry| entry.map(|(k, v)| (k.value(), v.value())))
+                .collect::<Result<_, _>>()
+                .map_err(internal_err)?;
+
+            for (key, metadata) in entries {
+                let Some(expiration) = metadata.expiration() else {
+                    continue;
+                };
+
+                if expiration <= now {
+                    topic_index
+                        .remove(key.topic.as_str(), key.subscriber.as_str())
+                        .map_err(internal_err)?;
+                    // remove expired subscriptions from persistency
+                    table.remove(key).map_err(internal_err)?;
+                } else {
+                    let subscriber = UUri::try_from(key.subscriber).map_err(|e| {
+                        PersistencyError::serialization_error(format!(
+                            "Error deserializing subscriber uri {e}"
+                        ))
+                    })?;
+                    let topic = UUri::try_from(key.topic).map_err(|e| {
+                        PersistencyError::serialization_error(format!(
+                            "Error deserializing topic uri {e}"
+                        ))
+                    })?;
+                    // prepare to return any remaining ones
+                    remaining.push((subscriber, topic, expiration));
+                }
             }
-        });
+        }
+        write_txn.commit().map_err(internal_err)?;
 
         // return remaining subscription entries (all entries with expiration timestamp in the future)
-        Ok(expiring_subscriptions)
+        Ok(remaining)
     }
 
     /// Clears the subscription database
     // [impl->req~usubscription-reset~1]
     pub(crate) fn reset(&mut self) -> Result<(), PersistencyError> {
-        let keys = self.persistency.get_all();
-        for key in keys {
-            self.persistency.rem(&key).map_err(|e| {
-                PersistencyError::internal_error(format!(
-                    "Error removing subscription entries from persistency {e}"
-                ))
-            })?;
-        }
-        self.persistency.dump().map_err(|e| {
-            PersistencyError::internal_error(format!(
-                "Error dumping cleared subscription data to persistency {e}"
-            ))
-        })?;
+        // dropping and recreating the tables is cheaper than deleting entry-by-entry
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
 
+        write_txn
+            .delete_table(SUBSCRIPTIONS)
+            .map_err(internal_err)?;
+        write_txn
+            .delete_multimap_table(TOPIC_INDEX)
+            .map_err(internal_err)?;
+        // re-create tables
+        write_txn.open_table(SUBSCRIPTIONS).map_err(internal_err)?;
+        write_txn
+            .open_multimap_table(TOPIC_INDEX)
+            .map_err(internal_err)?;
+
+        write_txn.commit().map_err(internal_err)?;
         Ok(())
     }
 
     #[cfg(test)]
-    pub(crate) fn get_data(&self) -> Result<SubscriptionSet, Box<dyn std::error::Error>> {
-        #[allow(clippy::mutable_key_type)]
-        let mut map: SubscriptionSet = HashMap::new();
-
-        for entry in self.persistency.iter() {
-            #[allow(clippy::mutable_key_type)]
-            let mut topic_subscribers = HashMap::new();
-
-            if let Some(list) =
-                entry.get_value::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>()
-            {
-                for (subscriber, expiry) in list {
-                    topic_subscribers.insert(
-                        UUri::try_from(subscriber).map_err(|e| {
-                            PersistencyError::serialization_error(format!(
-                                "Error deserializing subscriber uri {e}"
-                            ))
-                        })?,
-                        expiry,
-                    );
-                }
-            }
-
-            map.insert(
-                UUri::try_from(entry.get_key()).map_err(|e| {
-                    PersistencyError::serialization_error(format!(
-                        "Error deserializing topic uri {e}"
-                    ))
-                })?,
-                topic_subscribers,
-            );
+    pub(crate) fn set_data(&mut self, data: Vec<SubscriptionInfo>) {
+        self.reset().expect("expecting database reset to work");
+        for entry in data {
+            self.add_subscription(
+                entry.subscriber(),
+                entry.topic(),
+                *entry.expiration(),
+                *entry.min_sample_period(),
+            )
+            .expect("expecting adding test data to work");
         }
-        Ok(map)
-    }
-
-    #[cfg(test)]
-    #[allow(clippy::mutable_key_type)]
-    pub(crate) fn set_data(
-        &mut self,
-        map: SubscriptionSet,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        for (topic, subscribers) in map {
-            self.persistency
-                .set(
-                    &topic.to_uri(PERSIST_UP_SCHEMA),
-                    &subscribers
-                        .iter()
-                        .map(|(u, e)| (u.to_uri(PERSIST_UP_SCHEMA), *e))
-                        .collect::<HashMap<SubscriberAsString, Option<ExpiryTimestamp>>>(),
-                )
-                .map_err(|e| {
-                    PersistencyError::serialization_error(format!(
-                        "Error storing topic-subscriber data in persistency {e}"
-                    ))
-                })?;
-        }
-        Ok(())
     }
 }
 
 /// Persistent store for tracking remote topic status
 pub(crate) struct RemoteTopicsStore {
-    persistency: PickleDb,
+    persistency: Database,
 }
 
 impl RemoteTopicsStore {
     const PERSIST_UP_SCHEMA: bool = true;
     const REMOTE_TOPICS_STORE_NAME: &str = ".remote_topics.store";
 
-    pub(crate) fn new(configuration: &USubscriptionConfiguration) -> RemoteTopicsStore {
-        RemoteTopicsStore {
-            persistency: get_store(
-                RemoteTopicsStore::REMOTE_TOPICS_STORE_NAME.to_string(),
-                configuration.persistency_path.clone(),
-                configuration.persistency_enabled,
-            ),
-        }
+    pub(crate) fn new(
+        configuration: &USubscriptionConfiguration,
+    ) -> Result<RemoteTopicsStore, PersistencyError> {
+        let persistency = get_store(
+            RemoteTopicsStore::REMOTE_TOPICS_STORE_NAME.to_string(),
+            configuration.persistency_path.clone(),
+            configuration.persistency_enabled,
+        );
+
+        // open table, iniates table creation if necessary
+        let write_txn = persistency.begin_write().map_err(internal_err)?;
+        write_txn.open_table(REMOTE_TOPICS).map_err(internal_err)?;
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(RemoteTopicsStore { persistency })
     }
 
     /// Returns subscription state of topic
@@ -406,24 +521,28 @@ impl RemoteTopicsStore {
     pub(crate) fn get_topic_state(
         &self,
         topic: &TopicUUri,
-    ) -> Result<Option<TopicState>, PersistencyError> {
-        let topic_string = &topic.to_uri(Self::PERSIST_UP_SCHEMA);
+    ) -> Result<Option<SubscriptionStatus>, PersistencyError> {
+        let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
 
-        Ok(if self.persistency.exists(topic_string) {
-            let bytes = self
-                .persistency
-                .get::<Vec<SerializedTopicState>>(topic_string)
-                .ok_or(PersistencyError::internal_error(
-                    "Error retrieving remote topic state from persistency",
-                ))?;
-            Some(deserialize_topic_state(&bytes).map_err(|e| {
-                PersistencyError::serialization_error(format!(
-                    "Error deserializing topic state {e}"
-                ))
-            })?)
-        } else {
-            None
-        })
+        let read_txn = self.persistency.begin_read().map_err(internal_err)?;
+        let state = {
+            let table = read_txn.open_table(REMOTE_TOPICS).map_err(internal_err)?;
+            table
+                .get(topic_string.as_str())
+                .map_err(internal_err)?
+                .map(|v| v.value())
+        };
+        read_txn.close().map_err(internal_err)?;
+
+        state
+            .map(|bytes| {
+                deserialize_topic_status(bytes).map_err(|e| {
+                    PersistencyError::serialization_error(format!(
+                        "Error deserializing topic state {e}"
+                    ))
+                })
+            })
+            .transpose()
     }
 
     /// Updates subscription state of topic in remote-topics store
@@ -432,18 +551,18 @@ impl RemoteTopicsStore {
     pub(crate) fn set_topic_state(
         &mut self,
         topic: &TopicUUri,
-        state: TopicState,
-    ) -> Result<TopicState, PersistencyError> {
-        let topic_string = &topic.to_uri(Self::PERSIST_UP_SCHEMA);
-        let bytes = serialize_topic_state(&state).map_err(|e| {
-            PersistencyError::serialization_error(format!("Error serializing topic state {e}"))
-        })?;
+        state: SubscriptionStatus,
+    ) -> Result<SubscriptionStatus, PersistencyError> {
+        let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
 
-        self.persistency.set(topic_string, &bytes).map_err(|e| {
-            PersistencyError::internal_error(format!(
-                "Error setting remote topic state in persistency {e}"
-            ))
-        })?;
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        {
+            let mut table = write_txn.open_table(REMOTE_TOPICS).map_err(internal_err)?;
+            table
+                .insert(topic_string.as_str(), serialize_topic_status(&state))
+                .map_err(internal_err)?;
+        }
+        write_txn.commit().map_err(internal_err)?;
 
         Ok(state)
     }
@@ -451,291 +570,236 @@ impl RemoteTopicsStore {
     /// Returns subscription state of remote topic, or adds new remote-topic with state TopicState::SUBSCRIBE_PENDING if topic is new
     /// * returns `Ok(TopicState)` (where TopicState is the new topic state)
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
-    pub(crate) fn add_topic_or_get_state(
+    pub(crate) fn add_topic_or_get_status(
         &mut self,
         topic: &TopicUUri,
-    ) -> Result<TopicState, PersistencyError> {
-        let topic_string = &topic.to_uri(Self::PERSIST_UP_SCHEMA);
+    ) -> Result<SubscriptionStatus, PersistencyError> {
+        let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
 
-        // if remote topic already has been registered, retrieve state
-        Ok(if self.persistency.exists(topic_string) {
-            let bytes = self
-                .persistency
-                .get::<Vec<SerializedTopicState>>(topic_string)
-                .ok_or(PersistencyError::internal_error(
-                    "Error retrieving remote topic state from persistency",
-                ))?;
-            deserialize_topic_state(&bytes).map_err(|e| {
-                PersistencyError::serialization_error(format!(
-                    "Error deserializing topic state {e}"
-                ))
-            })?
-        } else {
-            // [impl->req~usubscription-subscribe-remote-pending~1]
-            self.set_topic_state(topic, TopicState::SUBSCRIBE_PENDING)?
-        })
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        let state = {
+            let mut table = write_txn.open_table(REMOTE_TOPICS).map_err(internal_err)?;
+            let existing = table
+                .get(topic_string.as_str())
+                .map_err(internal_err)?
+                .map(|v| v.value());
+
+            match existing {
+                Some(bytes) => deserialize_topic_status(bytes).map_err(|e| {
+                    PersistencyError::serialization_error(format!(
+                        "Error deserializing topic state {e}"
+                    ))
+                })?,
+                None => {
+                    // [impl->req~usubscription-subscribe-remote-pending~1]
+                    let pending = SubscriptionStatus::SubscribePending;
+                    table
+                        .insert(topic_string.as_str(), serialize_topic_status(&pending))
+                        .map_err(internal_err)?;
+                    pending
+                }
+            }
+        };
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(state)
     }
 
     /// Clears the remote subscriptions database
     // [impl->req~usubscription-reset~1]
     pub(crate) fn reset(&mut self) -> Result<(), PersistencyError> {
-        let keys = self.persistency.get_all();
-        for key in keys {
-            self.persistency.rem(&key).map_err(|e| {
-                PersistencyError::internal_error(format!(
-                    "Error removing remote subscriptions from persistency {e}"
-                ))
-            })?;
-        }
-        self.persistency.dump().map_err(|e| {
-            PersistencyError::internal_error(format!(
-                "Error dumping cleared remote subscription data to persistency {e}"
-            ))
-        })?;
+        // dropping and recreating the table is cheaper than deleting entry-by-entry
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
 
+        write_txn
+            .delete_table(REMOTE_TOPICS)
+            .map_err(internal_err)?;
+        // re-create table
+        write_txn.open_table(REMOTE_TOPICS).map_err(internal_err)?;
+
+        write_txn.commit().map_err(internal_err)?;
         Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn get_data(
         &self,
-    ) -> Result<HashMap<TopicUUri, TopicState>, Box<dyn std::error::Error>> {
-        #[allow(clippy::mutable_key_type)]
-        let mut map: HashMap<TopicUUri, TopicState> = HashMap::new();
+    ) -> Result<HashMap<TopicUUri, SubscriptionStatus>, Box<dyn std::error::Error>> {
+        let mut map: HashMap<TopicUUri, SubscriptionStatus> = HashMap::new();
 
-        for kv in self.persistency.iter() {
-            if let Some(bytes) = kv.get_value::<Vec<SerializedTopicState>>() {
-                let value = deserialize_topic_state(&bytes)?;
-                map.insert(UUri::try_from(kv.get_key())?, value);
+        let read_txn = self.persistency.begin_read()?;
+        {
+            let table = read_txn.open_table(REMOTE_TOPICS)?;
+            for entry in table.iter()? {
+                let (key, value) = entry?;
+                let topic = UUri::try_from(key.value().to_string())?;
+                let state = deserialize_topic_status(value.value())?;
+                map.insert(topic, state);
             }
         }
+        read_txn.close()?;
 
         Ok(map)
     }
 
     #[cfg(test)]
-    #[allow(clippy::mutable_key_type)]
-    pub(crate) fn set_data(
-        &mut self,
-        map: HashMap<TopicUUri, TopicState>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        for (key, value) in map {
-            let _r = self.persistency.set(
-                &key.to_uri(Self::PERSIST_UP_SCHEMA),
-                &serialize_topic_state(&value)?,
-            );
+    pub(crate) fn set_data(&mut self, map: HashMap<TopicUUri, SubscriptionStatus>) {
+        self.reset().expect("expecting database reset to work");
+
+        for entry in map {
+            self.set_topic_state(&entry.0, entry.1)
+                .expect("expecting adding test data to work");
         }
-        Ok(())
     }
 }
 
 pub(crate) struct NotificationStore {
-    persistency: PickleDb,
+    persistency: Database,
 }
 
 impl NotificationStore {
     const PERSIST_UP_SCHEMA: bool = true;
     const NOTIFICATION_STORE_NAME: &str = ".notification.store";
 
-    pub(crate) fn new(configuration: &USubscriptionConfiguration) -> NotificationStore {
-        NotificationStore {
-            persistency: get_store(
-                NotificationStore::NOTIFICATION_STORE_NAME.to_string(),
-                configuration.persistency_path.clone(),
-                configuration.persistency_enabled,
-            ),
-        }
+    pub(crate) fn new(
+        configuration: &USubscriptionConfiguration,
+    ) -> Result<NotificationStore, PersistencyError> {
+        let persistency = get_store(
+            NotificationStore::NOTIFICATION_STORE_NAME.to_string(),
+            configuration.persistency_path.clone(),
+            configuration.persistency_enabled,
+        );
+
+        // open table, iniates table creation if necessary
+        let write_txn = persistency.begin_write().map_err(internal_err)?;
+        write_txn.open_table(NOTIFICATIONS).map_err(internal_err)?;
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(NotificationStore { persistency })
     }
 
-    /// Adds subscriber to custom-notifications store
+    /// Adds client to direct-notification registry
     /// * return `Ok(())` on success
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
-    pub(crate) fn add_notifyee(
-        &mut self,
-        subscriber: &SubscriberUUri,
-        topic: &TopicUUri,
-    ) -> Result<(), PersistencyError> {
-        let subscriber_string = subscriber.to_uri(Self::PERSIST_UP_SCHEMA);
-        let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
+    pub(crate) fn add_notifyee(&mut self, client: &UUri) -> Result<(), PersistencyError> {
+        let client_string = client.to_uri(Self::PERSIST_UP_SCHEMA);
 
-        if !self.persistency.lexists(&topic_string) {
-            self.persistency.lcreate(&topic_string).map_err(|e| {
-                PersistencyError::internal_error(format!(
-                    "Error setting notification configuration in persistency {e}"
-                ))
-            })?;
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        {
+            let mut table = write_txn.open_table(NOTIFICATIONS).map_err(internal_err)?;
+            table
+                .insert(client_string.as_str(), ())
+                .map_err(internal_err)?;
         }
-
-        self.persistency
-            .ladd(&topic_string, &subscriber_string)
-            .map(|_| ())
-            .ok_or_else(|| {
-                PersistencyError::internal_error(
-                    "Error setting notification configuration in persistency",
-                )
-            })
-    }
-
-    /// Removes subscriber from custom-notifications store
-    /// * return `Ok(())` on success
-    /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
-    pub(crate) fn remove_notifyee(
-        &mut self,
-        subscriber: &SubscriberUUri,
-        topic: &TopicUUri,
-    ) -> Result<(), PersistencyError> {
-        let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
-        if !self.persistency.lexists(&topic_string) {
-            return Ok(());
-        }
-
-        let subscriber_string = subscriber.to_uri(Self::PERSIST_UP_SCHEMA);
-        self.persistency
-            .lrem_value(&topic_string, &subscriber_string)
-            .map_err(|e| {
-                PersistencyError::internal_error(format!(
-                    "Error setting notification configuration in persistency {e}"
-                ))
-            })?;
+        write_txn.commit().map_err(internal_err)?;
 
         Ok(())
     }
 
-    /// Returns a list of all subscribers that have registered to be notified on change of topic state
-    ///
-    /// # Arguments
-    ///
-    /// * `topic` - UUri of the topic that subscribers registered to be notified about.
+    /// Removes client from direct-notification registry
+    /// * return `Ok(())` on success
+    /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
+    pub(crate) fn remove_notifyee(&mut self, client: &UUri) -> Result<(), PersistencyError> {
+        let client_string = client.to_uri(Self::PERSIST_UP_SCHEMA);
+
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+        {
+            let mut table = write_txn.open_table(NOTIFICATIONS).map_err(internal_err)?;
+            table.remove(client_string.as_str()).map_err(internal_err)?;
+        }
+        write_txn.commit().map_err(internal_err)?;
+
+        Ok(())
+    }
+
+    /// Returns a list of all clients that have registered to be notified of subscription state changes
     ///
     /// # Returns
     ///
-    /// * return a `Vec<SubscriberUUri>` list of subscriber UUris that want to be notified about topic state changes
+    /// * return a `Vec<UUri>` list of client UUris that want to be notified about susbcription changes
     /// * returns a `PersistencyError` in case something went wrong with data serialization or storage
-    pub(crate) fn get_subscribers_registered_for_topic(
-        &mut self,
-        topic: &TopicUUri,
-    ) -> Result<Vec<SubscriberUUri>, PersistencyError> {
-        let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
-
-        if !self.persistency.lexists(&topic_string) {
-            return Ok(vec![]);
-        }
-
+    pub(crate) fn get_registered_notifyees(&mut self) -> Result<Vec<UUri>, PersistencyError> {
         let mut result = vec![];
 
-        for entry in self.persistency.liter(&topic_string) {
-            if let Some(subscriber_string) = entry.get_item::<String>() {
-                let subscriber = UUri::try_from(subscriber_string)
-                    .map_err(|e| PersistencyError::serialization_error(e.to_string()))?;
-                result.push(subscriber);
+        let read_txn = self.persistency.begin_read().map_err(internal_err)?;
+        {
+            let table = read_txn.open_table(NOTIFICATIONS).map_err(internal_err)?;
+            for entry in table.iter().map_err(internal_err)? {
+                result.push(
+                    UUri::try_from(entry.map_err(internal_err)?.0.value()).map_err(|e| {
+                        PersistencyError::serialization_error(format!(
+                            "Error deserializing subscriber uri {e}"
+                        ))
+                    })?,
+                );
             }
-        }
+        };
+        read_txn.close().map_err(internal_err)?;
+
         Ok(result)
     }
 
     /// Clears the notifications database
     // [impl->req~usubscription-reset~1]
     pub(crate) fn reset(&mut self) -> Result<(), PersistencyError> {
-        let keys = self.persistency.get_all();
-        for key in keys {
-            self.persistency.rem(&key).map_err(|e| {
-                PersistencyError::internal_error(format!(
-                    "Error removing registered-for-notifications from persistency {e}"
-                ))
-            })?;
-        }
-        self.persistency.dump().map_err(|e| {
-            PersistencyError::internal_error(format!(
-                "Error dumping cleared registered-for-notification data to persistency {e}"
-            ))
-        })?;
+        // dropping and recreating the table is cheaper than deleting entry-by-entry
+        let write_txn = self.persistency.begin_write().map_err(internal_err)?;
+
+        write_txn
+            .delete_table(NOTIFICATIONS)
+            .map_err(internal_err)?;
+        // re-create table
+        write_txn.open_table(NOTIFICATIONS).map_err(internal_err)?;
+
+        write_txn.commit().map_err(internal_err)?;
         Ok(())
-    }
-
-    pub(crate) fn get_data(
-        &self,
-    ) -> Result<Vec<(SubscriberUUri, TopicUUri)>, Box<dyn std::error::Error>> {
-        #[allow(clippy::mutable_key_type)]
-        let mut list: Vec<(SubscriberUUri, TopicUUri)> = Vec::new();
-
-        let topic_strings = self.persistency.get_all();
-        for topic_string in topic_strings {
-            for entry in self.persistency.liter(&topic_string) {
-                if let Some(subscriber_string) = entry.get_item::<String>() {
-                    let subscriber = UUri::try_from(subscriber_string)?;
-                    let topic = UUri::try_from(topic_string.clone())?;
-                    list.push((subscriber, topic));
-                }
-            }
-        }
-
-        Ok(list)
     }
 
     #[cfg(test)]
-    #[allow(clippy::mutable_key_type)]
-    pub(crate) fn set_data(
-        &mut self,
-        list: Vec<(SubscriberUUri, TopicUUri)>,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        for (subscriber, topic) in list {
-            let subscriber_string = subscriber.to_uri(Self::PERSIST_UP_SCHEMA);
-            let topic_string = topic.to_uri(Self::PERSIST_UP_SCHEMA);
+    pub(crate) fn set_data(&mut self, list: Vec<SubscriberUUri>) {
+        self.reset().expect("expecting database reset to work");
 
-            if !self.persistency.lexists(&topic_string) {
-                self.persistency.lcreate(&topic_string).map_err(|e| {
-                    PersistencyError::internal_error(format!(
-                        "Error setting notification configuration in persistency {e}"
-                    ))
-                })?;
-            }
-
-            self.persistency.ladd(&topic_string, &subscriber_string);
+        for entry in list {
+            self.add_notifyee(&entry)
+                .expect("expecting adding test data to work");
         }
-
-        Ok(())
     }
 }
 
-fn serialize_topic_state(
-    state: &TopicState,
-) -> Result<Vec<SerializedTopicState>, Box<dyn std::error::Error>> {
-    Ok(state.value().to_le_bytes().to_vec())
+fn serialize_topic_status(state: &SubscriptionStatus) -> u8 {
+    match state {
+        SubscriptionStatus::Unsubscribed => 0,
+        SubscriptionStatus::SubscribePending => 1,
+        SubscriptionStatus::Subscribed => 2,
+        SubscriptionStatus::UnsubscribePending => 3,
+    }
 }
 
-fn deserialize_topic_state(
-    bytes: &[SerializedTopicState],
-) -> Result<TopicState, Box<dyn std::error::Error>> {
-    Ok(
-        TopicState::from_i32(i32::from_le_bytes(bytes[..4].try_into()?))
-            .ok_or_else(|| serde::de::value::Error::custom("Invalid TopicState value"))?,
-    )
+fn deserialize_topic_status(value: u8) -> Result<SubscriptionStatus, PersistencyError> {
+    match value {
+        0 => Ok(SubscriptionStatus::Unsubscribed),
+        1 => Ok(SubscriptionStatus::SubscribePending),
+        2 => Ok(SubscriptionStatus::Subscribed),
+        3 => Ok(SubscriptionStatus::UnsubscribePending),
+        _ => Err(PersistencyError::serialization_error(
+            "invalid SubscriptionStatus value",
+        )),
+    }
 }
 
-// Return a notification store instance, configured according to a USubscriptionConfiguration
-fn get_store(name: String, path: PathBuf, persistency_enabled: bool) -> PickleDb {
-    // duplicate policy returns, because there is no way to `clone()` this thing - and I need two instances below for load / new calls
-    let (path, policy_load, policy_new) = {
-        let path = validate_and_append_filename(&path, &name)
-            .unwrap_or_else(|e| panic!("Problem with persistency, invalid storage file name: {e}"));
+// Return a persistent storage entity, configured according to a USubscriptionConfiguration
+fn get_store(name: String, path: PathBuf, persistency_enabled: bool) -> Database {
+    let path = validate_and_append_filename(&path, &name)
+        .unwrap_or_else(|e| panic!("Problem with persistency, invalid storage file name: {e}"));
 
-        if persistency_enabled {
-            (
-                path,
-                PickleDbDumpPolicy::AutoDump,
-                PickleDbDumpPolicy::AutoDump,
-            )
-        } else {
-            (
-                path,
-                PickleDbDumpPolicy::NeverDump,
-                PickleDbDumpPolicy::NeverDump,
-            )
-        }
-    };
-
-    PickleDb::load(&path, policy_load, SerializationMethod::Bin)
-        .unwrap_or_else(|_| PickleDb::new(&path, policy_new, SerializationMethod::Bin))
+    if persistency_enabled {
+        Database::create(&path).expect("failed to open redb database")
+    } else {
+        // in-memory backend to disable disk persistence
+        Database::builder()
+            .create_with_backend(redb::backends::InMemoryBackend::new())
+            .expect("failed to create in-memory database")
+    }
 }
 
 // Check whether a filename contains any relative/path traversal characters, combine with directory if all is well
@@ -765,25 +829,20 @@ fn validate_and_append_filename(dir: &PathBuf, filename: &str) -> Result<PathBuf
 mod tests {
     // These are tests just for locally used helper functions. More complex and complete tests of the persistency
     // manager business logic are located in tests/persistency_tests.rs
-
     use super::*;
     use test_case::test_case;
 
-    #[test_case(TopicState::UNSUBSCRIBED, &[0,0,0,0]; "State UNSUBSCRIBED")]
-    #[test_case(TopicState::SUBSCRIBE_PENDING, &[1,0,0,0]; "State SUBSCRIBE_PENDING")]
-    #[test_case(TopicState::SUBSCRIBED, &[2,0,0,0]; "State SUBSCRIBED")]
-    #[test_case(TopicState::UNSUBSCRIBE_PENDING, &[3,0,0,0]; "State UNSUBSCRIBE_PENDING")]
+    #[test_case(SubscriptionStatus::Unsubscribed; "State UNSUBSCRIBED")]
+    #[test_case(SubscriptionStatus::SubscribePending; "State SUBSCRIBE_PENDING")]
+    #[test_case(SubscriptionStatus::Subscribed; "State SUBSCRIBED")]
+    #[test_case(SubscriptionStatus::UnsubscribePending; "State UNSUBSCRIBE_PENDING")]
     #[test_log::test(tokio::test)]
-    async fn test_serialize_deserialize_topic_state(state: TopicState, bytes: &[u8]) {
+    async fn test_serialize_deserialize_topic_state(state: SubscriptionStatus) {
         // One way...
-        let serialized_bytes = serialize_topic_state(&state);
-        assert!(serialized_bytes.is_ok());
-
-        let serialized_bytes = serialized_bytes.unwrap();
-        assert_eq!(bytes, serialized_bytes);
+        let serialized_bytes = serialize_topic_status(&state);
 
         // ... then the other
-        let reconstructed_state = deserialize_topic_state(bytes);
+        let reconstructed_state = deserialize_topic_status(serialized_bytes);
         assert!(reconstructed_state.is_ok());
 
         let reconstructed_state = reconstructed_state.unwrap();

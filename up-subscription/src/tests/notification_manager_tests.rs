@@ -21,10 +21,11 @@ mod tests {
     };
 
     use up_rust::{
+        communication::SubscriptionStatus,
         core::usubscription::{
-            usubscription_uri, State, SubscriptionStatus, Update, RESOURCE_ID_SUBSCRIPTION_CHANGE,
+            usubscription_uri, SubscriptionInfo, RESOURCE_ID_SUBSCRIPTION_CHANGE,
         },
-        LocalUriProvider, UMessage, UMessageBuilder, UUID,
+        LocalUriProvider, UMessage, UMessageBuilder, UUri, UUID,
     };
 
     use crate::{
@@ -73,25 +74,17 @@ mod tests {
             CommandSender { command_sender }
         }
 
-        async fn add_notifyee(
-            &self,
-            subscriber: SubscriberUUri,
-            topic: TopicUUri,
-        ) -> Result<(), Box<dyn Error>> {
+        async fn add_notifyee(&self, subscriber: SubscriberUUri) -> Result<(), Box<dyn Error>> {
             Ok(self
                 .command_sender
-                .send(NotificationEvent::AddNotifyee { subscriber, topic })
+                .send(NotificationEvent::AddNotifyee { subscriber })
                 .await?)
         }
 
-        async fn remove_notifyee(
-            &self,
-            subscriber: SubscriberUUri,
-            topic: TopicUUri,
-        ) -> Result<(), Box<dyn Error>> {
+        async fn remove_notifyee(&self, subscriber: SubscriberUUri) -> Result<(), Box<dyn Error>> {
             Ok(self
                 .command_sender
-                .send(NotificationEvent::RemoveNotifyee { subscriber, topic })
+                .send(NotificationEvent::RemoveNotifyee { subscriber })
                 .await?)
         }
 
@@ -115,27 +108,24 @@ mod tests {
             Ok(receive_from.await?)
         }
 
-        async fn get_notification_topics(
-            &self,
-        ) -> Result<Vec<(SubscriberUUri, TopicUUri)>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<Vec<(SubscriberUUri, TopicUUri)>>();
+        async fn get_notification_topics(&self) -> Result<Vec<UUri>, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<Vec<UUri>>();
             self.command_sender
-                .send(NotificationEvent::GetNotificationTopics { respond_to })
+                .send(NotificationEvent::GetNotifyees { respond_to })
                 .await?;
 
             Ok(receive_from.await?)
         }
 
-        #[allow(clippy::mutable_key_type)]
         async fn set_notification_topics(
             &self,
-            notification_topics_replacement: Vec<(SubscriberUUri, TopicUUri)>,
+            notification_topics_replacement: Vec<UUri>,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             self.command_sender
-                .send(NotificationEvent::SetNotificationTopics {
+                .send(NotificationEvent::SetNotifyees {
                     respond_to,
-                    notification_topics_replacement,
+                    notifyee_replacement: notification_topics_replacement,
                 })
                 .await?;
 
@@ -147,22 +137,20 @@ mod tests {
     async fn test_add_notifyee() {
         let command_sender = CommandSender::new(Arc::new(CommandSender::get_config()), vec![]);
 
-        let expected_subscriber = test_lib::helpers::subscriber_info1().uri.unwrap();
-        let expected_topic = test_lib::helpers::local_topic1_uri();
+        let expected_client = test_lib::helpers::subscriber_uri1();
 
         command_sender
-            .add_notifyee(expected_subscriber.clone(), expected_topic.clone())
+            .add_notifyee(expected_client.clone())
             .await
-            .expect("Error communicating with subscription manager");
+            .expect("expecting communication with subscription manager to work");
 
-        #[allow(clippy::mutable_key_type)]
         let notification_topics = command_sender
             .get_notification_topics()
             .await
-            .expect("Error communicating with subscription manager");
+            .expect("expecting communication with subscription manager to work");
 
         assert_eq!(notification_topics.len(), 1);
-        assert!(notification_topics.contains(&(expected_subscriber, expected_topic)));
+        assert!(notification_topics.contains(&expected_client));
     }
 
     #[test_log::test(tokio::test)]
@@ -170,29 +158,25 @@ mod tests {
         let command_sender = CommandSender::new(Arc::new(CommandSender::get_config()), vec![]);
 
         // prepare things
-        let expected_subscriber = test_lib::helpers::subscriber_info1().uri.unwrap();
-        let expected_topic = test_lib::helpers::local_topic1_uri();
+        let expected_clients = test_lib::helpers::subscriber_uri1();
 
-        #[allow(clippy::mutable_key_type)]
-        let notification_topics_replacement: Vec<(SubscriberUUri, TopicUUri)> =
-            vec![(expected_subscriber.clone(), expected_topic.clone())];
+        let notification_topics_replacement: Vec<UUri> = vec![expected_clients.clone()];
 
         command_sender
             .set_notification_topics(notification_topics_replacement)
             .await
-            .expect("Error communicating with subscription manager");
+            .expect("expecting communication with subscription manager to work");
 
         // operation to test
         command_sender
-            .remove_notifyee(expected_subscriber.clone(), expected_topic.clone())
+            .remove_notifyee(expected_clients.clone())
             .await
-            .expect("Error communicating with subscription manager");
+            .expect("expecting communication with subscription manager to work");
 
-        #[allow(clippy::mutable_key_type)]
         let notification_topics = command_sender
             .get_notification_topics()
             .await
-            .expect("Error communicating with subscription manager");
+            .expect("expecting communication with subscription manager to work");
 
         assert_eq!(notification_topics.len(), 0);
     }
@@ -203,25 +187,23 @@ mod tests {
     async fn test_state_change() {
         // prepare things
         // this is the status&topic&subscriber that the notification is about
-        let changing_status = SubscriptionStatus {
-            state: State::SUBSCRIBED.into(),
-            ..Default::default()
-        };
+        let changing_status = SubscriptionStatus::Subscribed;
         let changing_topic = test_lib::helpers::local_topic1_uri();
-        let changing_subscriber = test_lib::helpers::subscriber_info1();
+        let changing_subscriber = test_lib::helpers::subscriber_uri1();
 
         // the update message that we're expecting
-        let expected_update = Update {
-            topic: Some(changing_topic.clone()).into(),
-            subscriber: Some(changing_subscriber.clone()).into(),
-            status: Some(changing_status.clone()).into(),
-            ..Default::default()
-        };
+        let expected_update = SubscriptionInfo::new(
+            changing_topic.clone(),
+            changing_subscriber.clone(),
+            changing_status.clone(),
+            None,
+            None,
+        );
 
         // this is the generic update channel notification, that always is sent
         // [utest->dsn~usubscription-change-notification-topic~1]
         let expected_message_general_channel =
-            UMessageBuilder::publish(usubscription_uri(RESOURCE_ID_SUBSCRIPTION_CHANGE))
+            UMessageBuilder::publish(usubscription_uri(None, RESOURCE_ID_SUBSCRIPTION_CHANGE))
                 .with_message_id(UUID::build())
                 .build_with_protobuf_payload(&expected_update)
                 .unwrap();
@@ -233,11 +215,7 @@ mod tests {
 
         // operation to test
         let r = command_sender
-            .state_change(
-                changing_subscriber.uri.unwrap_or_default(),
-                changing_topic.clone(),
-                changing_status,
-            )
+            .state_change(changing_subscriber, changing_topic, changing_status)
             .await;
         assert!(r.is_ok())
     }
@@ -247,25 +225,22 @@ mod tests {
     async fn test_state_change_direct_notification() {
         // prepare things
         // this is the status&topic&subscriber that the notification is about
-        let changing_status = SubscriptionStatus {
-            state: State::SUBSCRIBED.into(),
-            ..Default::default()
-        };
+        let changing_status = SubscriptionStatus::Subscribed;
         let changing_topic = test_lib::helpers::local_topic1_uri();
-        let interested_subscriber = test_lib::helpers::subscriber_info1();
-        let interested_subscriber_uri = interested_subscriber.uri.clone().unwrap();
+        let interested_client = test_lib::helpers::subscriber_uri1();
 
         // the update message that we're expecting
-        let expected_update = Update {
-            topic: Some(changing_topic.clone()).into(),
-            subscriber: Some(interested_subscriber.clone()).into(),
-            status: Some(changing_status.clone()).into(),
-            ..Default::default()
-        };
+        let expected_update = SubscriptionInfo::new(
+            changing_topic.clone(),
+            interested_client.clone(),
+            changing_status.clone(),
+            None,
+            None,
+        );
 
         // this is the generic update channel notification, that always is sent
         let expected_message_general_channel =
-            UMessageBuilder::publish(usubscription_uri(RESOURCE_ID_SUBSCRIPTION_CHANGE))
+            UMessageBuilder::publish(usubscription_uri(None, RESOURCE_ID_SUBSCRIPTION_CHANGE))
                 .with_message_id(UUID::build())
                 .build_with_protobuf_payload(&expected_update)
                 .unwrap();
@@ -274,13 +249,13 @@ mod tests {
         let config = Arc::new(CommandSender::get_config());
         let expected_notitication_message = UMessageBuilder::notification(
             config.get_resource_uri(SOURCE_URI_RESOURCE_ID),
-            interested_subscriber_uri.clone(),
+            interested_client.clone(),
         )
         .with_message_id(UUID::build())
         .build_with_protobuf_payload(&expected_update)
-        .unwrap();
+        .expect("expecting message creation to work");
 
-        // Set up test rig, to expect both general-channel and direct notification messages
+        // Set up test rig, to expecting both general-channel and direct notification messages
         let command_sender = CommandSender::new(
             config,
             vec![
@@ -290,17 +265,13 @@ mod tests {
         );
 
         command_sender
-            .add_notifyee(interested_subscriber_uri.clone(), changing_topic.clone())
+            .add_notifyee(interested_client.clone())
             .await
-            .expect("Error preparing test case context");
+            .expect("expecting internal data passing to work");
 
-        // operation to test - we now expect two messages, the general-channel notification as well as the direct notification to subscriber1
+        // operation to test - we now expecting two messages, the general-channel notification as well as the direct notification to subscriber1
         let r = command_sender
-            .state_change(
-                interested_subscriber_uri,
-                changing_topic.clone(),
-                changing_status,
-            )
+            .state_change(interested_client, changing_topic, changing_status)
             .await;
         assert!(r.is_ok())
     }
@@ -310,66 +281,56 @@ mod tests {
     async fn test_unregister_direct_notification() {
         // prepare things
         // this is the status&topic&subscriber that the notification is about
-        let changing_status = SubscriptionStatus {
-            state: State::SUBSCRIBED.into(),
-            ..Default::default()
-        };
+        let changing_status = SubscriptionStatus::Subscribed;
         let changing_topic = test_lib::helpers::local_topic1_uri();
-        let interested_subscriber = test_lib::helpers::subscriber_info1();
-        let interested_subscriber_uri = interested_subscriber.uri.clone().unwrap();
+        let interested_client = test_lib::helpers::subscriber_uri1();
 
         // the update message that we're expecting
-        let expected_update = Update {
-            topic: Some(changing_topic.clone()).into(),
-            subscriber: Some(interested_subscriber.clone()).into(),
-            status: Some(changing_status.clone()).into(),
-            ..Default::default()
-        };
+        let expected_update = SubscriptionInfo::new(
+            changing_topic.clone(),
+            interested_client.clone(),
+            changing_status.clone(),
+            None,
+            None,
+        );
 
         // this is the generic update channel notification, that always is sent
         let expected_message_general_channel =
-            UMessageBuilder::publish(usubscription_uri(RESOURCE_ID_SUBSCRIPTION_CHANGE))
+            UMessageBuilder::publish(usubscription_uri(None, RESOURCE_ID_SUBSCRIPTION_CHANGE))
                 .with_message_id(UUID::build())
                 .build_with_protobuf_payload(&expected_update)
                 .unwrap();
 
-        // Set up test rig, to expect only general-channel message
+        // Set up test rig, to expecting only general-channel message
         let config = Arc::new(CommandSender::get_config());
         let command_sender = CommandSender::new(config, vec![expected_message_general_channel]);
 
         // pre-set notification manager with direct-notification request for topic1 by subscriber1
         command_sender
-            .set_notification_topics(vec![(
-                interested_subscriber_uri.clone(),
-                changing_topic.clone(),
-            )])
+            .set_notification_topics(vec![interested_client.clone()])
             .await
-            .expect("Error preparing test case context");
+            .expect("expecting internal data passing to work");
 
         // check that we're really set up for 1 direct notification of subscriber1 for topic1
         let list = command_sender
             .get_notification_topics()
             .await
-            .expect("Error preparing test case context");
+            .expect("expecting internal data passing to work");
         assert_eq!(list.len(), 1);
         assert_eq!(
-            list.first().expect("Error preparing test case context"),
-            &(interested_subscriber_uri.clone(), changing_topic.clone())
+            list.first().expect("expecting test case prep to work"),
+            &interested_client.clone()
         );
 
         // Unsubscribe subscriber1 for notifications on topic1
         command_sender
-            .remove_notifyee(interested_subscriber_uri.clone(), changing_topic.clone())
+            .remove_notifyee(interested_client.clone())
             .await
-            .expect("Error preparing test case context");
+            .expect("expecting test case prep to work");
 
         // operation to test - we're now only expecting the general-channel notification message
         let r = command_sender
-            .state_change(
-                interested_subscriber_uri,
-                changing_topic.clone(),
-                changing_status,
-            )
+            .state_change(interested_client, changing_topic, changing_status)
             .await;
         assert!(r.is_ok())
     }
