@@ -58,7 +58,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@master
       with: 
         toolchain: ${{ env.RUST_TOOLCHAIN }}
-    - uses: taiki-e/install-action@5d880190e41a7608c29a5c91c6b5d24561d53850 # cargo-deny
+    - uses: taiki-e/install-action@bf66f708eded47c5c0759227f6170ebb8431af24 # cargo-deny
     - name: Run cargo deny check
       run: |
         cargo deny check
@@ -124,7 +124,7 @@ jobs:
         with: 
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@3ba07337ea315bc9340c308d30d4d10093baa59e # cargo-hack
+      - uses: taiki-e/install-action@d8a3af99c9218844a5b609a03d73ecfb4fdee649 # cargo-hack
       - name: Run cargo hack powerset
         run: |
           cargo hack check --feature-powerset --no-dev-deps
@@ -146,7 +146,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Using nextest because it's faster than built-in test
-      - uses: taiki-e/install-action@bb0282cdd6e41599bc8dfa5fc712ebe9e27cfd8c # nextest
+      - uses: taiki-e/install-action@2eb6de229bc778f7df20e106e4b34e9a364c73e6 # nextest
       - name: Run cargo nextest
         run: |
           cargo nextest run --package ${{ inputs.package || '"*"' }} --message-format libtest-json-plus ${{ matrix.feature-flags }} > testresults${{ matrix.feature-flags }}.json
