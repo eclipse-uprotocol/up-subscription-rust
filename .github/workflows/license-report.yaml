@@ -37,11 +37,11 @@ jobs:
     outputs:
       test_coverage_url: ${{ steps.license_report.outputs.artifact-url }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
     - uses: dtolnay/rust-toolchain@master
       with: 
         toolchain: ${{ env.RUST_TOOLCHAIN }}
-    - uses: Swatinem/rust-cache@v2
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
     - name: Install cargo-about
       run: |
@@ -50,7 +50,7 @@ jobs:
       run: |
         mkdir -p release
         cargo about generate about.hbs > licenses.html
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       id: license_report
       with:
         name: license-report
