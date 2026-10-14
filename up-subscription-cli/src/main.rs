@@ -25,35 +25,35 @@ use up_subscription::{
     ConfigurationError, USubscriptionConfiguration, USubscriptionService,
 };
 
-#[cfg(feature = "mqtt5")]
-use up_transport_mqtt5::Mqtt5TransportOptions;
+// #[cfg(feature = "mqtt5")]
+// use up_transport_mqtt5::Mqtt5TransportOptions;
 
-#[cfg(feature = "zenoh")]
-use crate::transport::zenoh::ZenohArgs;
+// #[cfg(feature = "zenoh")]
+// use crate::transport::zenoh::ZenohArgs;
 
 mod transport;
 use transport::get_local_transport;
-#[cfg(feature = "mqtt5")]
-use transport::get_mqtt5_transport;
-#[cfg(feature = "zenoh")]
-use transport::get_zenoh_transport;
+// #[cfg(feature = "mqtt5")]
+// use transport::get_mqtt5_transport;
+// #[cfg(feature = "zenoh")]
+// use transport::get_zenoh_transport;
 
 #[derive(clap::Subcommand)]
 enum Transport {
     /// Use in-memory local uProtocol transport
     Local,
-    #[cfg(feature = "zenoh")]
-    /// Use Zenoh as uProtocol transport
-    Zenoh {
-        #[command(flatten)]
-        options: ZenohArgs,
-    },
-    #[cfg(feature = "mqtt5")]
-    /// Use MQTT 5 as uProtocol transport
-    Mqtt5 {
-        #[command(flatten)]
-        options: Mqtt5TransportOptions,
-    },
+    // #[cfg(feature = "zenoh")]
+    // /// Use Zenoh as uProtocol transport
+    // Zenoh {
+    //     #[command(flatten)]
+    //     options: ZenohArgs,
+    // },
+    // #[cfg(feature = "mqtt5")]
+    // /// Use MQTT 5 as uProtocol transport
+    // Mqtt5 {
+    //     #[command(flatten)]
+    //     options: Mqtt5TransportOptions,
+    // },
 }
 
 // All our args
@@ -124,10 +124,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deal with transport module that we're to use
     let transport = match args.transport {
         Transport::Local => get_local_transport().await,
-        #[cfg(feature = "mqtt5")]
-        Transport::Mqtt5 { options } => get_mqtt5_transport(&args.authority, options).await,
-        #[cfg(feature = "zenoh")]
-        Transport::Zenoh { options } => get_zenoh_transport(&args.authority, options).await,
+        // #[cfg(feature = "mqtt5")]
+        // Transport::Mqtt5 { options } => get_mqtt5_transport(&args.authority, options).await,
+        // #[cfg(feature = "zenoh")]
+        // Transport::Zenoh { options } => get_zenoh_transport(&args.authority, options).await,
     }?;
 
     let rpc_server = InMemoryRpcServer::new(
