@@ -14,46 +14,33 @@
 use std::sync::Arc;
 use tokio::{
     sync::{
-        mpsc::{self},
-        Notify,
+        mpsc::{self, Sender},
+        oneshot, Notify,
     },
     task::JoinHandle,
 };
+use tracing::{error, info};
 
-use tracing::info;
 use up_rust::{
-    communication::{InMemoryRpcServer, RpcServer},
-    core::usubscription::{
-        RESOURCE_ID_FETCH_SUBSCRIBERS, RESOURCE_ID_FETCH_SUBSCRIPTIONS,
-        RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_RESET, RESOURCE_ID_SUBSCRIBE,
-        RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS, RESOURCE_ID_UNSUBSCRIBE,
+    communication::{
+        InMemoryRpcClient, RequestHandler, ServiceInvocationError, SubscriptionStatus, UPayload,
     },
-    LocalUriProvider, UCode, UStatus, UTransport, UUri,
+    core::usubscription::{
+        extract_usubscription_request, FetchSubscriptionsResponse, SubscribeResponse,
+        SubscriptionInfo, USubscriptionRequest, USubscriptionResponse,
+    },
+    UAttributes, UCode, UStatus, UTransport, UUri,
 };
 
 use crate::{
-    handlers::{
-        fetch_subscribers::FetchSubscribersRequestHandler,
-        fetch_subscriptions::FetchSubscriptionsRequestHandler,
-        register_for_notifications::RegisterNotificationsRequestHandler, reset::ResetHandler,
-        subscribe::SubscriptionRequestHandler,
-        unregister_for_notifications::UnregisterNotificationsRequestHandler,
-        unsubscribe::UnubscribeRequestHandler,
-    },
+    adapters::{DynTransport, DynUriProvider},
     helpers,
     notification_manager::{self, NotificationEvent},
     subscription_manager::{self, SubscriptionEvent},
     USubscriptionConfiguration,
 };
 
-/// Whether to include 'up:' uProtocol schema prefix in URIs in log and error messages
-pub const INCLUDE_SCHEMA: bool = false;
-
-// Remote-subscribe operation ttl; 5 minutes in milliseconds, as per https://github.com/eclipse-uprotocol/up-spec/tree/main/up-l3/usubscription/v3#6-timeout--retry-logic
-pub(crate) const UP_REMOTE_TTL: u32 = 300000;
-
 // Alias definitions to provide more clarity, and make it easier to accomodate potential changes to expiry type in up-spec
-pub(crate) type ExpiryTimestamp = u128;
 pub(crate) type SubscriberUUri = UUri;
 pub(crate) type TopicUUri = UUri;
 
@@ -62,66 +49,57 @@ pub(crate) type TopicUUri = UUri;
 pub trait UTransportHolder {
     fn get_transport(&self) -> Arc<dyn UTransport>;
 }
-
-impl UTransportHolder for USubscriptionService {
+impl<S> UTransportHolder for USubscriptionService<S> {
     fn get_transport(&self) -> Arc<dyn UTransport> {
         self.transport.clone()
     }
 }
 
-/// This object holds all mutable content associated with a running `USubscriptionService`, and is populated and returned when
-/// calling `USubscriptionService::run()`. It exists for two reasons: a) allow `USubscriptionService` to remain useable as an immutable
-/// object that can be put into `Arc`s and passed around freely, while b) offering a well-defined way to stop a running `USubscriptionService`
-/// by simply calling `USubscriptionStopper::stop()`.
-pub struct USubscriptionStopper {
+/// USubscriptionService, compile-time enforced type-state pattern
+pub struct Idle;
+pub struct Running {
+    subscription_sender: Sender<SubscriptionEvent>,
+    notification_sender: Sender<NotificationEvent>,
     shutdown_notification: Arc<Notify>,
-    subscription_joiner: Option<JoinHandle<()>>,
-    notification_joiner: Option<JoinHandle<()>>,
+    subscription_joiner: JoinHandle<()>,
+    notification_joiner: JoinHandle<()>,
 }
-
-impl USubscriptionStopper {
-    pub async fn stop(&mut self) {
-        info!("Stopping uSubscription service");
-        self.shutdown_notification.notify_waiters();
-
-        self.subscription_joiner
-            .take()
-            .expect("Has this USubscription instance already been stopped?")
-            .await
-            .expect("Error shutting down subscription manager");
-        self.notification_joiner
-            .take()
-            .expect("Has this USubscription instance already been stopped?")
-            .await
-            .expect("Error shutting down notification manager");
-    }
-}
-
-/// Core landing point and coordination of business logic of the uProtocol USubscription service. This implementation usually would be
-/// front-ended by the various `listeners` to connect with corresponding uProtocol RPC server endpoints.
-///
-/// Functionally, the code in this context primarily cares about:
-/// - input validation
-/// - interaction with / orchestration of backends for managing subscriptions (`usubscription_manager.rs`) and dealing with notifications (`usubscription_notification.rs`)
-#[derive(Clone)]
-pub struct USubscriptionService {
+pub struct USubscriptionService<S = Idle> {
+    config: Arc<USubscriptionConfiguration>,
     transport: Arc<dyn UTransport>,
+    state: S,
 }
 
-impl USubscriptionService {
-    pub async fn run(
-        config: Arc<USubscriptionConfiguration>,
-        transport: Arc<dyn UTransport>,
-    ) -> Result<USubscriptionStopper, UStatus> {
-        let server = Arc::new(InMemoryRpcServer::new(transport.clone(), config.clone()));
+impl USubscriptionService<Idle> {
+    pub fn new(config: Arc<USubscriptionConfiguration>, transport: Arc<dyn UTransport>) -> Self {
+        Self {
+            config,
+            transport,
+            state: Idle,
+        }
+    }
+
+    pub async fn run(self) -> Result<USubscriptionService<Running>, UStatus> {
         let shutdown_notification = Arc::new(Notify::new());
+        let (notification_sender, notification_receiver) =
+            mpsc::channel::<NotificationEvent>(self.config.notification_command_buffer.into());
+        let (subscription_sender, subscription_receiver) =
+            mpsc::channel::<SubscriptionEvent>(self.config.subscription_command_buffer.into());
+
+        // RpcClient for handling remote subscriptions
+        let rpc_client = Arc::new(
+            InMemoryRpcClient::new(
+                Arc::new(DynTransport::new(self.transport.clone())),
+                Arc::new(DynUriProvider::new(self.config.clone())),
+            )
+            .await
+            .map_err(|e| UStatus::fail_with_code(UCode::Internal, e.to_string()))?,
+        );
 
         // Set up notification manager actor
-        let config_cloned = config.clone();
-        let transport_cloned = transport.clone();
+        let config_cloned = self.config.clone();
+        let transport_cloned = self.transport.clone();
         let shutdown_notification_cloned = shutdown_notification.clone();
-        let (notification_sender, notification_receiver) =
-            mpsc::channel::<NotificationEvent>(config.notification_command_buffer.into());
         let notification_joiner = helpers::spawn_and_log_error(async move {
             notification_manager::notification_engine(
                 config_cloned,
@@ -134,16 +112,13 @@ impl USubscriptionService {
         });
 
         // Set up subscription manager actor
-        let config_cloned = config.clone();
-        let transport_cloned = transport.clone();
+        let config_cloned = self.config.clone();
         let shutdown_notification_cloned = shutdown_notification.clone();
-        let (subscription_sender, subscription_receiver) =
-            mpsc::channel::<SubscriptionEvent>(config.subscription_command_buffer.into());
         let notification_sender_cloned = notification_sender.clone();
         let subscription_joiner = helpers::spawn_and_log_error(async move {
             subscription_manager::handle_message(
                 config_cloned,
-                transport_cloned,
+                rpc_client,
                 subscription_receiver,
                 notification_sender_cloned,
                 shutdown_notification_cloned,
@@ -152,103 +127,165 @@ impl USubscriptionService {
             Ok(())
         });
 
-        register_handlers(server, subscription_sender, notification_sender).await?;
-
-        info!(
-            "uSubscription service is up and running, listening on {}",
-            config.get_source_uri().to_uri(true)
-        );
-
-        Ok(USubscriptionStopper {
-            subscription_joiner: Some(subscription_joiner),
-            notification_joiner: Some(notification_joiner),
-            shutdown_notification,
+        Ok(USubscriptionService {
+            config: self.config,
+            transport: self.transport,
+            state: Running {
+                subscription_sender,
+                notification_sender,
+                subscription_joiner,
+                notification_joiner,
+                shutdown_notification,
+            },
         })
     }
 }
 
-async fn register_handlers(
-    server: Arc<dyn RpcServer>,
-    subscription_sender: tokio::sync::mpsc::Sender<SubscriptionEvent>,
-    notification_sender: tokio::sync::mpsc::Sender<NotificationEvent>,
-) -> Result<(), UStatus> {
-    let origin_filter = UUri::any_with_resource_id(0);
+impl USubscriptionService<Running> {
+    pub async fn stop(self) {
+        info!("Stopping uSubscription service");
+        self.state.shutdown_notification.notify_waiters();
+        self.state
+            .subscription_joiner
+            .await
+            .expect("Error shutting down subscription manager");
+        self.state
+            .notification_joiner
+            .await
+            .expect("Error shutting down notification manager");
+    }
+}
 
-    // Link up request handlers
-    let subscription_request_handler =
-        Arc::new(SubscriptionRequestHandler::new(subscription_sender.clone()));
-    server
-        .register_endpoint(
-            Some(&origin_filter),
-            RESOURCE_ID_SUBSCRIBE,
-            subscription_request_handler,
-        )
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+#[async_trait::async_trait]
+impl RequestHandler for USubscriptionService<Running> {
+    async fn handle_request(
+        &self,
+        resource_id: u16,
+        message_attributes: &UAttributes,
+        request_payload: Option<UPayload>,
+    ) -> Result<Option<UPayload>, ServiceInvocationError> {
+        // Decode the payload of uSubscription operations into a typed request. Malformed or
+        // unsupported requests result in a `ServiceInvocationError`.
+        let request = extract_usubscription_request(resource_id, request_payload)?;
 
-    let unsubscribe_request_handler =
-        Arc::new(UnubscribeRequestHandler::new(subscription_sender.clone()));
-    server
-        .register_endpoint(
-            Some(&origin_filter),
-            RESOURCE_ID_UNSUBSCRIBE,
-            unsubscribe_request_handler,
-        )
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
+        #[allow(clippy::wildcard_enum_match_arm)]
+        match request {
+            USubscriptionRequest::Subscribe(req) => {
+                let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
+                let se = SubscriptionEvent::AddSubscription {
+                    subscriber: message_attributes.source().clone(),
+                    topic: req.topic.clone(),
+                    expiration: req.expiration,
+                    sample_period: req.sample_period,
+                    respond_to,
+                };
+                if let Err(e) = self.state.subscription_sender.send(se).await {
+                    error!("Error communicating with subscription manager: {e}");
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                }
+                let Ok(status) = receive_from.await else {
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                };
+                USubscriptionResponse::Subscribe(SubscribeResponse {
+                    topic: req.topic,
+                    status,
+                })
+            }
+            USubscriptionRequest::Unsubscribe(req) => {
+                let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
+                let se = SubscriptionEvent::RemoveSubscription {
+                    subscriber: message_attributes.source().clone(),
+                    topic: req.topic.clone(),
+                    respond_to,
+                };
+                if let Err(e) = self.state.subscription_sender.send(se).await {
+                    error!("Error communicating with subscription manager: {e}");
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                }
+                if receive_from.await.is_err() {
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                };
+                USubscriptionResponse::Unsubscribe(())
+            }
+            USubscriptionRequest::FetchSubscriptions(req) => {
+                let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriptionInfo>>();
+                let se = SubscriptionEvent::FetchSubscriptions {
+                    subscriber_filter: req.subscriber_filter.clone(),
+                    topic_filter: req.topic_filter.clone(),
+                    respond_to,
+                };
+                if let Err(e) = self.state.subscription_sender.send(se).await {
+                    error!("Error communicating with subscription manager: {e}");
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                }
+                let Ok(subscriptions) = receive_from.await else {
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                };
+                USubscriptionResponse::FetchSubscriptions(FetchSubscriptionsResponse {
+                    subscriptions,
+                })
+            }
+            USubscriptionRequest::RegisterForNotification(()) => {
+                let se = NotificationEvent::AddNotifyee {
+                    subscriber: message_attributes.source().clone(),
+                };
+                if let Err(e) = self.state.notification_sender.send(se).await {
+                    error!("Error communicating with subscription manager: {e}");
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                }
+                USubscriptionResponse::RegisterForNotification(())
+            }
+            USubscriptionRequest::UnregisterForNotification(()) => {
+                let se = NotificationEvent::RemoveNotifyee {
+                    subscriber: message_attributes.source().clone(),
+                };
+                if let Err(e) = self.state.notification_sender.send(se).await {
+                    error!("Error communicating with subscription manager: {e}");
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                }
+                USubscriptionResponse::UnregisterForNotification(())
+            }
+            USubscriptionRequest::Reset(()) => {
+                let (respond_to, receive_from) = oneshot::channel::<()>();
+                let se = SubscriptionEvent::Reset { respond_to };
+                if let Err(e) = self.state.subscription_sender.send(se).await {
+                    error!("Error communicating with subscription manager: {e}");
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                }
+                if receive_from.await.is_err() {
+                    return Err(ServiceInvocationError::Internal(
+                        "Error processing request".to_string(),
+                    ));
+                };
+                USubscriptionResponse::Reset(())
+            }
+            // `USubscriptionRequest` is `#[non_exhaustive]`, so new operations can be
+            // added in future releases without breaking this code.
+            other => {
+                return Err(ServiceInvocationError::Unimplemented(format!(
+                    "operation not supported by this service: {other:?}"
+                )))
+            }
+        };
 
-    let register_notification_handler = Arc::new(RegisterNotificationsRequestHandler::new(
-        notification_sender.clone(),
-    ));
-    server
-        .register_endpoint(
-            Some(&origin_filter),
-            RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
-            register_notification_handler,
-        )
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-    let unregister_notification_handler = Arc::new(UnregisterNotificationsRequestHandler::new(
-        notification_sender.clone(),
-    ));
-    server
-        .register_endpoint(
-            Some(&origin_filter),
-            RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
-            unregister_notification_handler,
-        )
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-    let fetch_subscribers_handler = Arc::new(FetchSubscribersRequestHandler::new(
-        subscription_sender.clone(),
-    ));
-    server
-        .register_endpoint(
-            Some(&origin_filter),
-            RESOURCE_ID_FETCH_SUBSCRIBERS,
-            fetch_subscribers_handler,
-        )
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-    let fetch_subscriptions_handler = Arc::new(FetchSubscriptionsRequestHandler::new(
-        subscription_sender.clone(),
-    ));
-    server
-        .register_endpoint(
-            Some(&origin_filter),
-            RESOURCE_ID_FETCH_SUBSCRIPTIONS,
-            fetch_subscriptions_handler,
-        )
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-    let reset_handler = Arc::new(ResetHandler::new(subscription_sender.clone()));
-    server
-        .register_endpoint(Some(&origin_filter), RESOURCE_ID_RESET, reset_handler)
-        .await
-        .map_err(|e| UStatus::fail_with_code(UCode::INTERNAL, e.to_string()))?;
-
-    Ok(())
+        Ok(None)
+    }
 }

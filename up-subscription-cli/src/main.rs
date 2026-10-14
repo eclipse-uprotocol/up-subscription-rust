@@ -16,37 +16,44 @@ use std::sync::Arc;
 use clap::Parser;
 use tokio::signal;
 use tracing::error;
-use up_subscription::{ConfigurationError, USubscriptionConfiguration, USubscriptionService};
+use up_rust::{
+    communication::{InMemoryRpcServer, RpcServer},
+    core::usubscription::{RESOURCE_ID_SUBSCRIBE, RESOURCE_ID_UNSUBSCRIBE},
+};
+use up_subscription::{
+    adapters::{DynTransport, DynUriProvider},
+    ConfigurationError, USubscriptionConfiguration, USubscriptionService,
+};
 
-#[cfg(feature = "mqtt5")]
-use up_transport_mqtt5::Mqtt5TransportOptions;
+// #[cfg(feature = "mqtt5")]
+// use up_transport_mqtt5::Mqtt5TransportOptions;
 
-#[cfg(feature = "zenoh")]
-use crate::transport::zenoh::ZenohArgs;
+// #[cfg(feature = "zenoh")]
+// use crate::transport::zenoh::ZenohArgs;
 
 mod transport;
 use transport::get_local_transport;
-#[cfg(feature = "mqtt5")]
-use transport::get_mqtt5_transport;
-#[cfg(feature = "zenoh")]
-use transport::get_zenoh_transport;
+// #[cfg(feature = "mqtt5")]
+// use transport::get_mqtt5_transport;
+// #[cfg(feature = "zenoh")]
+// use transport::get_zenoh_transport;
 
 #[derive(clap::Subcommand)]
 enum Transport {
     /// Use in-memory local uProtocol transport
     Local,
-    #[cfg(feature = "zenoh")]
-    /// Use Zenoh as uProtocol transport
-    Zenoh {
-        #[command(flatten)]
-        options: ZenohArgs,
-    },
-    #[cfg(feature = "mqtt5")]
-    /// Use MQTT 5 as uProtocol transport
-    Mqtt5 {
-        #[command(flatten)]
-        options: Mqtt5TransportOptions,
-    },
+    // #[cfg(feature = "zenoh")]
+    // /// Use Zenoh as uProtocol transport
+    // Zenoh {
+    //     #[command(flatten)]
+    //     options: ZenohArgs,
+    // },
+    // #[cfg(feature = "mqtt5")]
+    // /// Use MQTT 5 as uProtocol transport
+    // Mqtt5 {
+    //     #[command(flatten)]
+    //     options: Mqtt5TransportOptions,
+    // },
 }
 
 // All our args
@@ -117,18 +124,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deal with transport module that we're to use
     let transport = match args.transport {
         Transport::Local => get_local_transport().await,
-        #[cfg(feature = "mqtt5")]
-        Transport::Mqtt5 { options } => get_mqtt5_transport(&args.authority, options).await,
-        #[cfg(feature = "zenoh")]
-        Transport::Zenoh { options } => get_zenoh_transport(&args.authority, options).await,
+        // #[cfg(feature = "mqtt5")]
+        // Transport::Mqtt5 { options } => get_mqtt5_transport(&args.authority, options).await,
+        // #[cfg(feature = "zenoh")]
+        // Transport::Zenoh { options } => get_zenoh_transport(&args.authority, options).await,
     }?;
 
-    // Set up and run USubscription service
-    let mut ustop = USubscriptionService::run(config.clone(), transport.clone())
-        .await
-        .inspect_err(|e| error!("Error starting uSubscription service: {}", e))?;
+    let rpc_server = InMemoryRpcServer::new(
+        Arc::new(DynTransport::new(transport.clone())),
+        Arc::new(DynUriProvider::new(config.clone())),
+    );
+    let service = Arc::new(
+        USubscriptionService::new(config, transport)
+            .run()
+            .await
+            .inspect_err(|e| error!("Error starting uSubscription service: {}", e))?,
+    );
 
+    rpc_server
+        .register_endpoint(None, RESOURCE_ID_SUBSCRIBE, service.clone())
+        .await?;
+    rpc_server
+        .register_endpoint(None, RESOURCE_ID_UNSUBSCRIBE, service.clone())
+        .await?;
+
+    // Wait for kill signal
     signal::ctrl_c().await.expect("failed to listen for event");
-    ustop.stop().await;
+
+    // Drop the RPC server's references so the Arc can be unwrapped for stopping uSubscription service
+    rpc_server
+        .unregister_endpoint(None, RESOURCE_ID_SUBSCRIBE, service.clone())
+        .await?;
+    rpc_server
+        .unregister_endpoint(None, RESOURCE_ID_UNSUBSCRIBE, service.clone())
+        .await?;
+
+    Arc::try_unwrap(service)
+        .unwrap_or_else(|_| panic!("uSubscription service still has outstanding references"))
+        .stop()
+        .await;
     Ok(())
 }

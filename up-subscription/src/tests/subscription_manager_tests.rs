@@ -14,35 +14,33 @@
 // [utest->dsn~usubscription-state-machine~1]
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-    use std::error::Error;
-    use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
-    use std::vec;
-
-    use protobuf::MessageFull;
+    use std::{
+        collections::HashMap,
+        error::Error,
+        sync::Arc,
+        time::{Duration, SystemTime},
+        vec,
+    };
     use test_case::test_case;
     use tokio::sync::{mpsc, mpsc::Sender, oneshot, Notify};
     use tracing::debug;
 
     use up_rust::{
+        communication::{CallOptions, SubscriptionStatus, UPayload},
         core::usubscription::{
-            State, SubscriptionRequest, SubscriptionResponse, SubscriptionStatus,
+            usubscription_uri, SubscribeRequest, SubscribeResponse, SubscriptionInfo,
             UnsubscribeRequest,
         },
-        MockTransport, UCode, UStatus, UUri,
+        MockTransport, UStatus, UUri,
     };
 
     use crate::{
         configuration::DEFAULT_COMMAND_BUFFER_SIZE,
         helpers,
-        notification_manager::NotificationEvent,
-        persistency,
-        subscription_manager::{
-            self, InternalSubscriptionEvent, RequestKind, SubscriptionEntry, SubscriptionEvent,
-        },
-        test_lib,
-        usubscription::{ExpiryTimestamp, SubscriberUUri, TopicUUri},
+        notification_manager::{self, NotificationEvent},
+        subscription_manager::{self, InternalSubscriptionEvent, SubscriptionEvent},
+        test_lib::{self, helpers::*, mocks::MockRpcClientMock},
+        usubscription::{SubscriberUUri, TopicUUri},
         USubscriptionConfiguration,
     };
 
@@ -51,6 +49,12 @@ mod tests {
         command_sender: Sender<SubscriptionEvent>,
         notification_sender: Option<Sender<NotificationEvent>>,
         shutdowner: Arc<Notify>,
+    }
+    // Helper for keeping RpcClientMock setup data type simpler
+    struct ExpectedInvocation {
+        call_options: Option<CallOptions>,
+        request_payload: Option<UPayload>,
+        response_payload: Option<UPayload>,
     }
 
     impl CommandSender {
@@ -65,7 +69,7 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let transport_mock = MockTransport::default();
+            let rpc_client = Arc::new(MockRpcClientMock::default());
             let shutdown_notification = Arc::new(Notify::new());
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE.into());
@@ -102,7 +106,7 @@ mod tests {
             helpers::spawn_and_log_error(async move {
                 subscription_manager::handle_message(
                     config.clone(),
-                    Arc::new(transport_mock),
+                    rpc_client,
                     command_receiver,
                     notification_sender,
                     shutdown_notification_cloned,
@@ -119,8 +123,8 @@ mod tests {
         }
 
         // Allows configuration of expected notifications during test
-        async fn new_with_expected_notifications(
-            mut expected_notifications: Vec<NotificationEvent>,
+        async fn new_with_notification_manager(
+            expected_notifications: Vec<NotificationEvent>,
         ) -> Self {
             let config = Arc::new(
                 USubscriptionConfiguration::create(
@@ -132,63 +136,59 @@ mod tests {
                 )
                 .unwrap(),
             );
-            let transport_mock = MockTransport::default();
+            let rpc_client = Arc::new(MockRpcClientMock::default());
             let shutdown_notification = Arc::new(Notify::new());
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE.into());
-            let (notification_sender, mut notification_receiver) =
+            let (notification_sender, notification_receiver) =
                 mpsc::channel::<NotificationEvent>(config.notification_command_buffer.into());
 
-            // Spawn notification receiver task
+            // Set up notification manager actor
+            let mut transport = MockTransport::new();
+            for expected_message in expected_notifications {
+                match expected_message {
+                    NotificationEvent::StateChange {
+                        subscriber,
+                        topic,
+                        status,
+                        respond_to,
+                    } => {
+                        transport
+                            .expect_do_send()
+                            .withf(move |message| {
+                                let payload = message
+                                    .extract_protobuf::<SubscriptionInfo>()
+                                    .expect("expect message deserialization to work");
+
+                                subscriber
+                                    .clone()
+                                    .expect("expecting notification message to have a subscriber")
+                                    .eq(payload.subscriber())
+                                    && topic.eq(payload.topic())
+                                    && status.eq(payload.status())
+                            })
+                            .return_const({
+                                // this is all a bit hacky, but good enough for now
+                                let _r = respond_to.send(());
+                                Ok(())
+                            });
+                    }
+                    _ => {
+                        panic!("not expecting this NotificationEvent variants ");
+                    }
+                }
+            }
+
+            let config_cloned = config.clone();
             let shutdown_notification_cloned = shutdown_notification.clone();
             helpers::spawn_and_log_error(async move {
-                #[allow(clippy::mutable_key_type)]
-                let mut notification_topics: Vec<(SubscriberUUri, TopicUUri)> = Vec::new();
-                loop {
-                    tokio::select! {
-                        Some(event) = notification_receiver.recv() => {
-                            match event {
-                                NotificationEvent::StateChange { .. } => {
-                                    if let Some(pos) = expected_notifications.iter().position(|e| e == &event) {
-                                        if let NotificationEvent::StateChange { subscriber, status, topic, respond_to } = event {
-                                            debug!(
-                                                "Change Notification received: {} - {} - {}",
-                                                subscriber.unwrap_or_default().to_uri(true),
-                                                topic.to_uri(true),
-                                                status
-                                            );
-                                            // This is the ack response to the entity that initiated the notification to be send (e.g. subscription manager)
-                                            let _ = respond_to.send(());
-                                        }
-                                        // Send ack back to test case that was providing the expected_notifications back channel
-                                        let matched = expected_notifications.remove(pos);
-                                        if let NotificationEvent::StateChange { respond_to, .. } = matched {
-                                            let _ = respond_to.send(());
-                                        }
-                                    }
-                                },
-                                NotificationEvent::SetNotificationTopics { notification_topics_replacement, respond_to } => {
-                                    debug!("Notification Manager SetNotificationTopic command received");
-                                    notification_topics = notification_topics_replacement;
-                                    let _ = respond_to.send(());
-                                },
-                                NotificationEvent::GetNotificationTopics { respond_to } =>  {
-                                    debug!("Notification Manager GetNotificationTopic command received");
-                                    let _ = respond_to.send(notification_topics.clone());
-                                },
-                                NotificationEvent::Reset { respond_to } => {
-                                    debug!("Notification Manager Reset command received");
-                                    let _ = respond_to.send(Ok(()));
-                                }
-                                _ => panic!("Received unexpected notification event: {event:?}")
-                            }
-                        },
-                        _ = shutdown_notification_cloned.notified() => {
-                            debug!("Shutting down notification reception loop");
-                            break;
-                        },
-                    };
-                }
+                notification_manager::notification_engine(
+                    config_cloned,
+                    Arc::new(transport),
+                    notification_receiver,
+                    shutdown_notification_cloned,
+                )
+                .await;
                 Ok(())
             });
 
@@ -198,7 +198,7 @@ mod tests {
             helpers::spawn_and_log_error(async move {
                 subscription_manager::handle_message(
                     config.clone(),
-                    Arc::new(transport_mock),
+                    rpc_client,
                     command_receiver,
                     notification_sender_cloned,
                     shutdown_notification_cloned,
@@ -215,11 +215,11 @@ mod tests {
             }
         }
 
-        // Allows configuration of expected invoke_method() calls from subscription manager (provide expected request and response for utransport mock)
+        // Allows configuration of expected invoke_method() calls from subscription manager (provide expected request and response for RpcClient mock)
         // Useful e.g. for testing remote subscription operations, where subscription manager is expected to invoke methods on other uEntities
-        async fn new_with_client_options<R: MessageFull, S: MessageFull>(
-            expected_request: R,
-            expected_response: S,
+        // expected_invocations is a HashMap associating invoke-method UUris with tuples of (request-CallOptions, request-Payload, response-Payload)
+        async fn new_with_rpcclient_mock(
+            expected_invocations: HashMap<UUri, ExpectedInvocation>,
         ) -> Self {
             let config = Arc::new(
                 USubscriptionConfiguration::create(
@@ -236,13 +236,29 @@ mod tests {
             let (command_sender, command_receiver) =
                 mpsc::channel::<SubscriptionEvent>(DEFAULT_COMMAND_BUFFER_SIZE.into());
 
-            let mock_transport = Arc::new(
-                test_lib::mocks::utransport_mock_for_rpc(vec![(
-                    expected_request,
-                    expected_response,
-                )])
-                .await,
-            );
+            let mut rpc_client = MockRpcClientMock::default();
+            for (
+                request_method,
+                ExpectedInvocation {
+                    call_options,
+                    request_payload,
+                    response_payload,
+                },
+            ) in expected_invocations
+            {
+                let request_options =
+                    call_options.unwrap_or(CallOptions::for_rpc_request(5_000, None, None, None));
+
+                rpc_client
+                    .expect_invoke_method()
+                    .withf(move |method, calloptions, payload| {
+                        request_method.eq(method)
+                            && request_options.eq(calloptions)
+                            && request_payload.eq(payload)
+                    })
+                    .returning(move |_, _, _| Ok(response_payload.clone()));
+            }
+
             let (notification_sender, _) =
                 mpsc::channel::<NotificationEvent>(config.notification_command_buffer.into());
 
@@ -250,7 +266,7 @@ mod tests {
             helpers::spawn_and_log_error(async move {
                 subscription_manager::handle_message(
                     config,
-                    mock_transport,
+                    Arc::new(rpc_client),
                     command_receiver,
                     notification_sender,
                     shutdown_notification_cloned,
@@ -274,13 +290,15 @@ mod tests {
             &self,
             topic: TopicUUri,
             subscriber: SubscriberUUri,
-            expiry: Option<ExpiryTimestamp>,
+            expiration: Option<SystemTime>,
+            sample_period: Option<Duration>,
         ) -> Result<SubscriptionStatus, Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
             let command = SubscriptionEvent::AddSubscription {
                 subscriber,
                 topic,
-                expiry,
+                expiration,
+                sample_period,
                 respond_to,
             };
             self.command_sender.send(command).await?;
@@ -302,43 +320,32 @@ mod tests {
             Ok(receive_from.await?)
         }
 
-        async fn fetch_subscribers(
-            &self,
-            topic: TopicUUri,
-        ) -> Result<Vec<SubscriberUUri>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriberUUri>>();
-            let command = SubscriptionEvent::FetchSubscribers { topic, respond_to };
-            self.command_sender.send(command).await?;
-            Ok(receive_from.await?)
-        }
-
         async fn fetch_subscriptions(
             &self,
-            request: RequestKind,
-        ) -> Result<Vec<SubscriptionEntry>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriptionEntry>>();
+            subscriber_filter: Option<UUri>,
+            topic_filter: Option<UUri>,
+        ) -> Result<Vec<SubscriptionInfo>, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriptionInfo>>();
             let command = SubscriptionEvent::FetchSubscriptions {
-                request,
+                subscriber_filter,
+                topic_filter,
                 respond_to,
             };
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
         }
 
-        async fn get_topic_subscribers(
-            &self,
-        ) -> Result<persistency::SubscriptionSet, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<persistency::SubscriptionSet>();
+        async fn get_topic_subscribers(&self) -> Result<Vec<SubscriptionInfo>, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<Vec<SubscriptionInfo>>();
             let command = SubscriptionEvent::GetTopicSubscribers { respond_to };
 
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
         }
 
-        #[allow(clippy::mutable_key_type)]
         async fn set_topic_subscribers(
             &self,
-            topic_subscribers_replacement: persistency::SubscriptionSet,
+            topic_subscribers_replacement: Vec<SubscriptionInfo>,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             let command = SubscriptionEvent::SetTopicSubscribers {
@@ -350,18 +357,20 @@ mod tests {
             Ok(receive_from.await?)
         }
 
-        async fn get_remote_topics(&self) -> Result<HashMap<TopicUUri, State>, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<HashMap<TopicUUri, State>>();
+        async fn get_remote_topics(
+            &self,
+        ) -> Result<HashMap<TopicUUri, SubscriptionStatus>, Box<dyn Error>> {
+            let (respond_to, receive_from) =
+                oneshot::channel::<HashMap<TopicUUri, SubscriptionStatus>>();
             let command = SubscriptionEvent::GetRemoteTopics { respond_to };
 
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
         }
 
-        #[allow(clippy::mutable_key_type)]
         async fn set_remote_topics(
             &self,
-            remote_topics_replacement: HashMap<TopicUUri, State>,
+            remote_topics_replacement: HashMap<TopicUUri, SubscriptionStatus>,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             let command = SubscriptionEvent::SetRemoteTopics {
@@ -373,19 +382,18 @@ mod tests {
             Ok(receive_from.await?)
         }
 
-        #[allow(clippy::mutable_key_type)]
-        async fn set_notification_topics(
+        async fn set_notifyees(
             &self,
-            notification_topics_replacement: Vec<(SubscriberUUri, TopicUUri)>,
+            notifyee_replacement: Vec<UUri>,
         ) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
-            let command = NotificationEvent::SetNotificationTopics {
-                notification_topics_replacement,
+            let command = NotificationEvent::SetNotifyees {
+                notifyee_replacement,
                 respond_to,
             };
             self.notification_sender
                 .as_ref()
-                .unwrap()
+                .expect("expect notification manager/sender channel to be set up")
                 .send(command)
                 .await?;
             Ok(receive_from.await?)
@@ -413,47 +421,52 @@ mod tests {
 
     // [utest->req~usubscription-subscribe~1]
     // [utest->req~usubscription-subscribe-multiple~1]
-    #[test_case(vec![(UUri::default(), UUri::default())]; "Default susbcriber-topic")]
-    #[test_case(vec![(UUri::default(), UUri::default()), (UUri::default(), UUri::default())]; "Multiple default susbcriber-topic")]
-    #[test_case(vec![(test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1())]; "One susbcriber-topic")]
+    #[test_case(vec![(local_topic1_uri(), subscriber_uri1())]; "Default subscriber-topic")]
+    #[test_case(vec![(local_topic1_uri(), subscriber_uri1()), (local_topic1_uri(), subscriber_uri1())]; "Multiple identical subscriber-topic combinations")]
     #[test_case(vec![
-         (test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1()),
-         (test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1())
-         ]; "Multiple identical susbcriber-topic combinations")]
-    #[test_case(vec![
-         (test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri1()),
-         (test_lib::helpers::local_topic2_uri(), test_lib::helpers::subscriber_uri1()),
-         (test_lib::helpers::local_topic1_uri(), test_lib::helpers::subscriber_uri2()),
-         (test_lib::helpers::local_topic2_uri(), test_lib::helpers::subscriber_uri2())
+         (local_topic1_uri(), subscriber_uri1()), (local_topic1_uri(), subscriber_uri2()),
+         (local_topic2_uri(), subscriber_uri1()), (local_topic2_uri(), subscriber_uri2())
          ]; "Multiple susbcriber-topic combinations")]
     #[test_log::test(tokio::test)]
     async fn test_subscribe(topic_subscribers: Vec<(TopicUUri, SubscriberUUri)>) {
         let command_sender = CommandSender::new();
 
-        // Prepare things
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
+        // Prepa re things
+        let mut desired_state: HashMap<(SubscriberUUri, TopicUUri), SubscriptionInfo> =
+            HashMap::new();
+
         for (topic, subscriber) in topic_subscribers {
-            desired_state
-                .entry(topic.clone())
-                .or_default()
-                .insert(subscriber.clone(), None);
+            desired_state.insert(
+                (subscriber.clone(), topic.clone()),
+                SubscriptionInfo::new(
+                    topic.clone(),
+                    subscriber.clone(),
+                    SubscriptionStatus::Subscribed,
+                    None,
+                    None,
+                ),
+            );
 
             // Operation to test
-            let result = command_sender.subscribe(topic, subscriber, None).await;
+            let result = command_sender
+                .subscribe(topic, subscriber, None, None)
+                .await;
             assert!(result.is_ok());
 
             // Verify operation result content
-            assert_eq!(result.unwrap().state.unwrap(), State::SUBSCRIBED);
+            assert_eq!(result.unwrap(), SubscriptionStatus::Subscribed);
         }
 
         // Verify iternal bookeeping
         let topic_subscribers = command_sender.get_topic_subscribers().await;
         assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
         let topic_subscribers = topic_subscribers.unwrap();
         assert_eq!(topic_subscribers.len(), desired_state.len());
-        assert_eq!(topic_subscribers, desired_state);
+        assert!(desired_state
+            .into_values()
+            .collect::<Vec<_>>()
+            .iter()
+            .all(|x| topic_subscribers.contains(x)));
     }
 
     // [utest->req~usubscription-subscribe-expiration~1]
@@ -462,96 +475,102 @@ mod tests {
     async fn test_subscribe_with_expiry() {
         let command_sender = CommandSender::new();
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Error getting now timestamp")
-            .as_millis();
-
         // Prepare things
-        let mut desired_state: Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)> = vec![
-            (
+        let mut desired_state: Vec<SubscriptionInfo> = vec![
+            SubscriptionInfo::new(
                 test_lib::helpers::subscriber_uri1(),
                 test_lib::helpers::local_topic1_uri(),
+                SubscriptionStatus::Subscribed,
+                None, // subscription with no expiration property
                 None,
             ),
-            (
+            SubscriptionInfo::new(
                 test_lib::helpers::subscriber_uri2(),
                 test_lib::helpers::local_topic2_uri(),
-                Some(1000),
+                SubscriptionStatus::Subscribed,
+                Some(SystemTime::now() - Duration::from_secs(10)), // expired subscription
+                None,
             ),
-            (
+            SubscriptionInfo::new(
                 test_lib::helpers::subscriber_uri3(),
                 test_lib::helpers::local_topic2_uri(),
-                Some(now + 1000),
+                SubscriptionStatus::Subscribed,
+                Some(SystemTime::now() + Duration::from_secs(10)), // yet to expire subscription
+                None,
             ),
         ];
 
-        for (subscriber, topic, expiry) in desired_state.iter() {
+        for entry in desired_state.iter() {
             // Operation to test
-            let result = command_sender
-                .subscribe(topic.clone(), subscriber.clone(), *expiry)
-                .await;
-            assert!(result.is_ok());
-
+            let status = command_sender
+                .subscribe(
+                    entry.topic().clone(),
+                    entry.subscriber().clone(),
+                    *entry.expiration(),
+                    *entry.min_sample_period(),
+                )
+                .await
+                .expect("expecting internal message passing to work");
             // Verify operation result content
-            assert_eq!(result.unwrap().state.unwrap(), State::SUBSCRIBED);
+            assert_eq!(status, SubscriptionStatus::Subscribed);
         }
 
         // Verify iternal bookeeping
-        let actual_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(actual_subscribers.is_ok());
-
-        let flattened_subscribers: Vec<(SubscriberUUri, TopicUUri, Option<ExpiryTimestamp>)> =
-            actual_subscribers
-                .unwrap()
-                .iter()
-                .flat_map(|(outer_key, inner_map)| {
-                    inner_map.iter().map(move |(inner_key, value)| {
-                        (outer_key.clone(), inner_key.clone(), *value)
-                    })
-                })
-                .collect();
-
+        let actual_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
         desired_state.remove(1); // Remote item that has expiry timestamp in the past, so hasn't been added by subscription manager
-        assert_eq!(flattened_subscribers.len(), desired_state.len());
 
-        for (topic, subscriber, expiry) in flattened_subscribers {
-            assert!(desired_state.contains(&(subscriber, topic, expiry)));
-        }
+        assert_eq!(desired_state.len(), actual_subscribers.len());
+        assert!(desired_state.iter().all(|x| actual_subscribers.contains(x)));
     }
 
     // [utest->req~usubscription-subscribe-remote~1]
     // [utest->req~usubscription-subscribe-remote-pending~1]
     // [utest->req~usubscription-subscribe-remote-response~1]
-    #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBE_PENDING; "Remote topic, remote state SUBSCRIBED_PENDING")]
-    #[test_case(test_lib::helpers::remote_topic1_uri(), State::SUBSCRIBED; "Remote topic, remote state SUBSCRIBED")]
+    #[test_case(test_lib::helpers::remote_topic1_uri(), SubscriptionStatus::SubscribePending; "Remote topic, remote state SubscribePending")]
+    #[test_case(test_lib::helpers::remote_topic1_uri(), SubscriptionStatus::Subscribed; "Remote topic, remote state Subscribed")]
     #[test_log::test(tokio::test)]
-    async fn test_remote_subscribe(remote_topic: TopicUUri, remote_state: State) {
+    async fn test_remote_subscribe(remote_topic: TopicUUri, remote_state: SubscriptionStatus) {
         // Prepare things
-        let remote_subscription_request = SubscriptionRequest {
-            topic: Some(remote_topic.clone()).into(),
-            ..Default::default()
+        let remote_subscribe_request = SubscribeRequest {
+            topic: remote_topic.clone(),
+            expiration: None,
+            sample_period: None,
         };
-        let remote_subscription_response = SubscriptionResponse {
-            topic: Some(remote_topic.clone()).into(),
-            status: Some(SubscriptionStatus {
-                state: remote_state.into(),
-                ..Default::default()
-            })
-            .into(),
-            ..Default::default()
+        let remote_subscribe_response = SubscribeResponse {
+            topic: remote_topic.clone(),
+            status: remote_state,
         };
-        let command_sender = CommandSender::new_with_client_options::<
-            SubscriptionRequest,
-            SubscriptionResponse,
-        >(remote_subscription_request, remote_subscription_response)
-        .await;
+
+        // prepare data for RpcMock for CommandSender
+        let mut expected_invocations: HashMap<UUri, ExpectedInvocation> = HashMap::new();
+        expected_invocations.insert(
+            usubscription_uri(
+                Some(remote_topic.authority_name()),
+                up_rust::core::usubscription::RESOURCE_ID_SUBSCRIBE,
+            ),
+            ExpectedInvocation {
+                call_options: None,
+                request_payload: Some(
+                    UPayload::try_from_protobuf(remote_subscribe_request)
+                        .expect("expecting payload serialization to work"),
+                ),
+                response_payload: Some(
+                    UPayload::try_from_protobuf(remote_subscribe_response)
+                        .expect("expecting payload serialization to work"),
+                ),
+            },
+        );
+        let command_sender = CommandSender::new_with_rpcclient_mock(expected_invocations).await;
 
         // Operation to test
         let result = command_sender
             .subscribe(
                 remote_topic.clone(),
                 test_lib::helpers::subscriber_uri1(),
+                None,
                 None,
             )
             .await;
@@ -562,27 +581,27 @@ mod tests {
         // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
         // this might be SUBSCRIBE_PENDING or SUBSCRIBED
         assert!(
-            subscription_status.state.unwrap() == State::SUBSCRIBE_PENDING
-                || subscription_status.state.unwrap() == State::SUBSCRIBED
+            subscription_status == SubscriptionStatus::SubscribePending
+                || subscription_status == SubscriptionStatus::Subscribed
         );
 
         // Verify iternal bookeeping
         let topic_subscribers = command_sender.get_topic_subscribers().await;
         assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
         let topic_subscribers = topic_subscribers.unwrap();
         assert_eq!(topic_subscribers.len(), 1);
 
         let remote_topics = command_sender.get_remote_topics().await;
         assert!(remote_topics.is_ok());
-        #[allow(clippy::mutable_key_type)]
         let remote_topics = remote_topics.unwrap();
         assert_eq!(remote_topics.len(), 1);
         // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
         // this might be SUBSCRIBE_PENDING or SUBSCRIBED
         assert!(
-            *remote_topics.get(&remote_topic.clone()).unwrap() == State::SUBSCRIBE_PENDING
-                || *remote_topics.get(&remote_topic.clone()).unwrap() == State::SUBSCRIBED
+            *remote_topics.get(&remote_topic.clone()).unwrap()
+                == SubscriptionStatus::SubscribePending
+                || *remote_topics.get(&remote_topic.clone()).unwrap()
+                    == SubscriptionStatus::Subscribed
         );
     }
 
@@ -592,30 +611,43 @@ mod tests {
     async fn test_repeated_remote_subscribe() {
         // Prepare things
         let remote_topic = test_lib::helpers::remote_topic1_uri();
-        let remote_subscription_request = SubscriptionRequest {
-            topic: Some(remote_topic.clone()).into(),
-            ..Default::default()
+        let remote_subscribe_request = SubscribeRequest {
+            topic: remote_topic.clone(),
+            expiration: None,
+            sample_period: None,
         };
-        let remote_subscription_response = SubscriptionResponse {
-            topic: Some(remote_topic.clone()).into(),
-            status: Some(SubscriptionStatus {
-                state: State::SUBSCRIBED.into(),
-                ..Default::default()
-            })
-            .into(),
-            ..Default::default()
+        let remote_subscribe_response = SubscribeResponse {
+            topic: remote_topic.clone(),
+            status: SubscriptionStatus::Subscribed,
         };
-        let command_sender = CommandSender::new_with_client_options::<
-            SubscriptionRequest,
-            SubscriptionResponse,
-        >(remote_subscription_request, remote_subscription_response)
-        .await;
 
-        // Operation to test
+        // prepare data for RpcMock for CommandSender
+        let mut expected_invocations: HashMap<UUri, ExpectedInvocation> = HashMap::new();
+        expected_invocations.insert(
+            usubscription_uri(
+                Some(remote_topic.authority_name()),
+                up_rust::core::usubscription::RESOURCE_ID_SUBSCRIBE,
+            ),
+            ExpectedInvocation {
+                call_options: None,
+                request_payload: Some(
+                    UPayload::try_from_protobuf(remote_subscribe_request)
+                        .expect("expecting payload serialization to work"),
+                ),
+                response_payload: Some(
+                    UPayload::try_from_protobuf(remote_subscribe_response)
+                        .expect("expecting payload serialization to work"),
+                ),
+            },
+        );
+        let command_sender = CommandSender::new_with_rpcclient_mock(expected_invocations).await;
+
+        // Operations to test
         let result = command_sender
             .subscribe(
                 remote_topic.clone(),
                 test_lib::helpers::subscriber_uri1(),
+                None,
                 None,
             )
             .await;
@@ -626,24 +658,23 @@ mod tests {
                 remote_topic.clone(),
                 test_lib::helpers::subscriber_uri2(),
                 None,
+                None,
             )
             .await;
         assert!(result.is_ok());
 
         // Assert we have two local topic-subscriber entries...
-        let topic_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let topic_subscribers = topic_subscribers.unwrap();
-        let entry = topic_subscribers.get(&remote_topic);
-        assert!(entry.is_some());
-        assert_eq!(entry.unwrap().len(), 2);
+        let topic_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
+        assert_eq!(topic_subscribers.len(), 2);
 
         // ... and one remote topic entry
-        let remote_topics = command_sender.get_remote_topics().await;
-        assert!(remote_topics.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let remote_topics = remote_topics.unwrap();
+        let remote_topics = command_sender
+            .get_remote_topics()
+            .await
+            .expect("expecting internal data retrieval to work");
         assert_eq!(remote_topics.len(), 1);
     }
 
@@ -654,37 +685,36 @@ mod tests {
         let command_sender = CommandSender::new();
 
         // Prepare things
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic1_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        let desired_state: Vec<SubscriptionInfo> = vec![SubscriptionInfo::new(
+            test_lib::helpers::local_topic1_uri(),
+            test_lib::helpers::subscriber_uri1(),
+            SubscriptionStatus::Subscribed,
+            None,
+            None,
+        )];
 
         command_sender
             .set_topic_subscribers(desired_state)
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
         // Operation to test
-        let result = command_sender
+        let subscription_status = command_sender
             .unsubscribe(
                 test_lib::helpers::local_topic1_uri(),
                 test_lib::helpers::subscriber_uri1(),
             )
-            .await;
-        assert!(result.is_ok());
+            .await
+            .expect("expecting internal message passing to work");
 
         // Verify operation result content
-        let subscription_status = result.unwrap();
-        assert_eq!(subscription_status.state.unwrap(), State::UNSUBSCRIBED);
+        assert_eq!(subscription_status, SubscriptionStatus::Unsubscribed);
 
         // Verify iternal bookeeping
-        let topic_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let topic_subscribers = topic_subscribers.unwrap();
+        let topic_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
         assert_eq!(topic_subscribers.len(), 0);
     }
 
@@ -694,50 +724,48 @@ mod tests {
         let command_sender = CommandSender::new();
 
         // Prepare things
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic1_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri2(), None);
+        let desired_state: Vec<SubscriptionInfo> = vec![
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri2(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+        ];
 
         command_sender
-            .set_topic_subscribers(desired_state)
+            .set_topic_subscribers(desired_state.clone())
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
         // Operation to test
-        let result = command_sender
+        let subscription_status = command_sender
             .unsubscribe(
                 test_lib::helpers::local_topic1_uri(),
                 test_lib::helpers::subscriber_uri1(),
             )
-            .await;
-        assert!(result.is_ok());
+            .await
+            .expect("expecting internal message passing to work");
 
         // Verify operation result content
-        let subscription_status = result.unwrap();
-        assert_eq!(subscription_status.state.unwrap(), State::UNSUBSCRIBED);
+        assert_eq!(subscription_status, SubscriptionStatus::Unsubscribed);
 
         // Verify iternal bookeeping
-        let topic_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let topic_subscribers = topic_subscribers.unwrap();
+        let topic_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
         assert_eq!(topic_subscribers.len(), 1);
-        assert_eq!(
-            topic_subscribers
-                .get(&test_lib::helpers::local_topic1_uri())
-                .unwrap()
-                .len(),
-            1
-        );
-        assert!(topic_subscribers
-            .get(&test_lib::helpers::local_topic1_uri())
-            .unwrap()
-            .contains_key(&test_lib::helpers::subscriber_uri2()));
+
+        assert_eq!(topic_subscribers[0], desired_state[1]);
     }
 
     // All subscribers for a remote topic unsubscribe
@@ -748,38 +776,51 @@ mod tests {
 
         // Prepare things
         let remote_unsubscribe_request = UnsubscribeRequest {
-            topic: Some(remote_topic.clone()).into(),
-            ..Default::default()
+            topic: remote_topic.clone(),
         };
-        let remote_unsubscribe_response = UStatus {
-            code: UCode::OK.into(),
-            ..Default::default()
-        };
-        let command_sender = CommandSender::new_with_client_options::<UnsubscribeRequest, UStatus>(
-            remote_unsubscribe_request,
-            remote_unsubscribe_response,
-        )
-        .await;
+        let remote_unsubscribe_response = UStatus::ok();
 
+        // prepare data for RpcMock for CommandSender
+        let mut expected_invocations: HashMap<UUri, ExpectedInvocation> = HashMap::new();
+        expected_invocations.insert(
+            usubscription_uri(
+                Some(remote_topic.authority_name()),
+                up_rust::core::usubscription::RESOURCE_ID_UNSUBSCRIBE,
+            ),
+            ExpectedInvocation {
+                call_options: None,
+                request_payload: Some(
+                    UPayload::try_from_protobuf(remote_unsubscribe_request)
+                        .expect("expecting payload serialization to work"),
+                ),
+                response_payload: Some(
+                    UPayload::try_from_protobuf(remote_unsubscribe_response)
+                        .expect("expecting payload serialization to work"),
+                ),
+            },
+        );
+        let command_sender = CommandSender::new_with_rpcclient_mock(expected_invocations).await;
         // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state.entry(remote_topic.clone()).or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        let desired_state: Vec<SubscriptionInfo> = vec![SubscriptionInfo::new(
+            remote_topic.clone(),
+            test_lib::helpers::subscriber_uri1(),
+            SubscriptionStatus::Subscribed,
+            None,
+            None,
+        )];
 
         command_sender
             .set_topic_subscribers(desired_state)
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_remote_state: HashMap<TopicUUri, State> = HashMap::new();
-        desired_remote_state.insert(remote_topic.clone(), State::SUBSCRIBED);
+        let mut desired_remote_state: HashMap<TopicUUri, SubscriptionStatus> = HashMap::new();
+        desired_remote_state.insert(remote_topic.clone(), SubscriptionStatus::Subscribed);
+
         command_sender
             .set_remote_topics(desired_remote_state)
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
         // Operation to test
         let result = command_sender
@@ -790,32 +831,35 @@ mod tests {
         // Verify operation result content
         let subscription_status = result.unwrap();
         assert_eq!(
-            subscription_status.state.unwrap(),
+            subscription_status,
             // No matter what happens to the remove topic state, as far as the local client is concerned this is now an UNSUBSCRIBED topic
-            State::UNSUBSCRIBED
+            SubscriptionStatus::Unsubscribed
         );
 
         // Verify iternal bookeeping
-        let topic_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let topic_subscribers = topic_subscribers.unwrap();
+        let topic_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
         // We're expecting our local topic-subscriber tracker to be empty at this point
         assert_eq!(topic_subscribers.len(), 0);
 
-        let remote_topics = command_sender.get_remote_topics().await;
-        assert!(remote_topics.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let remote_topics = remote_topics.unwrap();
+        let remote_topics = command_sender
+            .get_remote_topics()
+            .await
+            .expect("expecting internal data retrieval to work");
         // our remote topic status tracker should still track this topic, and...
         assert_eq!(remote_topics.len(), 1);
 
-        let entry = remote_topics.get(&remote_topic);
-        assert!(entry.is_some());
-        let state = entry.unwrap();
+        let state = remote_topics
+            .get(&remote_topic)
+            .expect("expecting internal data retrieval to work");
         // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
         // this might be UNSUBSCRIBE_PENDING or UNSUBSCRIBED
-        assert!(*state == State::UNSUBSCRIBED || *state == State::UNSUBSCRIBE_PENDING);
+        assert!(
+            *state == SubscriptionStatus::Unsubscribed
+                || *state == SubscriptionStatus::UnsubscribePending
+        );
     }
 
     // Some subscribers for a remote topic unsubscribe, but at least one subscriber is left
@@ -829,60 +873,147 @@ mod tests {
         let command_sender = CommandSender::new();
 
         // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state.entry(remote_topic.clone()).or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri2(), None);
+        let desired_state: Vec<SubscriptionInfo> = vec![
+            SubscriptionInfo::new(
+                remote_topic.clone(),
+                test_lib::helpers::subscriber_uri1(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                remote_topic.clone(),
+                test_lib::helpers::subscriber_uri2(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+        ];
 
         command_sender
             .set_topic_subscribers(desired_state)
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_remote_state: HashMap<TopicUUri, State> = HashMap::new();
-        desired_remote_state.insert(remote_topic.clone(), State::SUBSCRIBED);
+        let mut desired_remote_state: HashMap<TopicUUri, SubscriptionStatus> = HashMap::new();
+        desired_remote_state.insert(remote_topic.clone(), SubscriptionStatus::Subscribed);
         command_sender
             .set_remote_topics(desired_remote_state)
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
         // Operation to test
-        let result = command_sender
+        let subscription_status = command_sender
             .unsubscribe(remote_topic.clone(), test_lib::helpers::subscriber_uri1())
-            .await;
-        assert!(result.is_ok());
+            .await
+            .expect("expecting internal data retrieval to work");
 
-        // Verify operation result content
-        let subscription_status = result.unwrap();
         assert_eq!(
-            subscription_status.state.unwrap(),
+            subscription_status,
             // this client immediately is getting UNSUBSCRIBED, no _PENDING, as for it the op is done
-            State::UNSUBSCRIBED
+            SubscriptionStatus::Unsubscribed
         );
 
         // Verify iternal bookeeping
-        let topic_subscribers = command_sender.get_topic_subscribers().await;
-        assert!(topic_subscribers.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let topic_subscribers = topic_subscribers.unwrap();
+        let topic_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
         // We're expecting one of the two original subscribers to still be tracked at this point
         assert_eq!(topic_subscribers.len(), 1);
 
-        let remote_topics = command_sender.get_remote_topics().await;
-        assert!(remote_topics.is_ok());
-        #[allow(clippy::mutable_key_type)]
-        let remote_topics = remote_topics.unwrap();
+        let remote_topics = command_sender
+            .get_remote_topics()
+            .await
+            .expect("expecting internal data retrieval to work");
         // our remote topic status tracker should still track this topic, and...
         assert_eq!(remote_topics.len(), 1);
 
-        let entry = remote_topics.get(&remote_topic);
-        assert!(entry.is_some());
-        let state = entry.unwrap();
+        let state = remote_topics
+            .get(&remote_topic)
+            .expect("expecting internal data retrieval to work");
         // ... it should still be in state SUBSCRIBED, as there is still another subscriber left
-        assert_eq!(*state, State::SUBSCRIBED);
+        assert_eq!(*state, SubscriptionStatus::Subscribed);
+    }
+
+    #[test_case(None, None, 7; "No filters, fetch all registered subscriptions")]
+    #[test_case(Some(test_lib::helpers::subscriber_uri1()), None, 3; "All subscriber1 subscriptions")]
+    #[test_case(None, Some(test_lib::helpers::local_topic1_uri()), 3; "All subscribers of topic1")]
+    #[test_case(Some(test_lib::helpers::subscriber_uri1()), Some(test_lib::helpers::local_topic1_uri()), 1; "All subscriptions of subscriber1 to topic1")]
+    #[test_case(Some(UUri::try_from_parts(LOCAL_AUTHORITY, 0xFFFF_FFFF, 0xFF, 0x0000).expect("expecting test UUri setup to work")), None, 7; "All local subscribers")]
+    #[test_case(None, Some(UUri::try_from_parts(LOCAL_AUTHORITY, 0xFFFF_FFFF, 0xFF, 0xFFFF).expect("expecting test UUri setup to work")), 6; "All subscriptions to local topics")]
+    #[test_case(None, Some(UUri::try_from_parts(REMOTE_AUTHORITY, 0xFFFF_FFFF, 0xFF, 0xFFFF).expect("expecting test UUri setup to work")), 1; "All subscriptions to remote topics")]
+    #[test_log::test(tokio::test)]
+    async fn test_fetch_subscriptions(
+        subscriber_filter: Option<UUri>,
+        topic_filter: Option<UUri>,
+        expected_len: usize,
+    ) {
+        let command_sender = CommandSender::new();
+
+        // set starting state
+        let desired_state: Vec<SubscriptionInfo> = vec![
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri2(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri3(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic2_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic2_uri(),
+                test_lib::helpers::subscriber_uri2(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::local_topic2_uri(),
+                test_lib::helpers::subscriber_uri3(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                test_lib::helpers::remote_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+        ];
+        command_sender
+            .set_topic_subscribers(desired_state)
+            .await
+            .expect("expecting internal message passing to work");
+
+        // test fetch
+        let subscriptions = command_sender
+            .fetch_subscriptions(subscriber_filter, topic_filter)
+            .await
+            .expect("expecting data retrieval to work");
+        assert_eq!(subscriptions.len(), expected_len);
     }
 
     // [utest->req~usubscription-subscribe-notifications~1]
@@ -897,18 +1028,17 @@ mod tests {
         let expected_notification = NotificationEvent::StateChange {
             subscriber: subscriber.clone().into(),
             topic: topic.clone(),
-            status: SubscriptionStatus {
-                state: State::SUBSCRIBED.into(),
-                ..Default::default()
-            },
+            status: SubscriptionStatus::Subscribed,
             respond_to,
         };
 
         let command_sender =
-            CommandSender::new_with_expected_notifications(vec![expected_notification]).await;
+            CommandSender::new_with_notification_manager(vec![expected_notification]).await;
 
         // Operation to test
-        let result = command_sender.subscribe(topic, subscriber, None).await;
+        let result = command_sender
+            .subscribe(topic, subscriber, None, None)
+            .await;
         assert!(result.is_ok());
 
         let _ = state_changed.await;
@@ -919,14 +1049,13 @@ mod tests {
     #[test_log::test(tokio::test)]
     async fn test_local_unsubscribe_notification() {
         // Prepare things
-        // Prepare things
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic1_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
+        let desired_state: Vec<SubscriptionInfo> = vec![SubscriptionInfo::new(
+            test_lib::helpers::local_topic1_uri(),
+            test_lib::helpers::subscriber_uri1(),
+            SubscriptionStatus::Subscribed,
+            None,
+            None,
+        )];
 
         let topic = test_lib::helpers::local_topic1_uri();
         let subscriber = test_lib::helpers::subscriber_uri1();
@@ -935,20 +1064,17 @@ mod tests {
         let expected_notification = NotificationEvent::StateChange {
             subscriber: subscriber.clone().into(),
             topic: topic.clone(),
-            status: SubscriptionStatus {
-                state: State::UNSUBSCRIBED.into(),
-                ..Default::default()
-            },
+            status: SubscriptionStatus::Unsubscribed,
             respond_to,
         };
 
         let command_sender =
-            CommandSender::new_with_expected_notifications(vec![expected_notification]).await;
+            CommandSender::new_with_notification_manager(vec![expected_notification]).await;
 
         command_sender
             .set_topic_subscribers(desired_state)
             .await
-            .expect("Interaction with subscription handler broken");
+            .expect("expecting internal message passing to work");
 
         // Operation to test
         let result = command_sender.unsubscribe(topic, subscriber).await;
@@ -957,46 +1083,6 @@ mod tests {
         let _ = state_changed.await;
         command_sender.shutdown().await;
     }
-
-    // TODO: Let's see if this is actually covered by a requirement - otherwise it should go
-    // #[test_log::test(tokio::test)]
-    // async fn test_remote_subscribe_notification() {
-    //     ;
-
-    //     // Prepare things
-    //     let topic = test_lib::helpers::remote_topic1_uri();
-    //     let (respond_to, state_changed) = oneshot::channel::<()>();
-
-    //     let expected_notification = NotificationEvent::StateChange {
-    //         subscriber: None,
-    //         topic: topic.clone(),
-    //         status: SubscriptionStatus {
-    //             state: State::SUBSCRIBE_PENDING.into(),
-    //             ..Default::default()
-    //         },
-    //         respond_to,
-    //     };
-
-    //     let command_sender =
-    //         CommandSender::new_with_expected_notifications(vec![expected_notification]).await;
-
-    //     let sender = command_sender
-    //         .get_remote_subcription_change_sender()
-    //         .await
-    //         .expect("Error retrieving remote-subscription change event command channel");
-
-    //     // Initiate notification event
-    //     let _ = sender
-    //         .send(InternalSubscriptionEvent::TopicStateUpdate {
-    //             topic: topic.clone(),
-    //             state: State::SUBSCRIBE_PENDING,
-    //         })
-    //         .await;
-
-    //     // ensure that we have run through all the async layers and reached the notification assertion statements
-    //     let _ = state_changed.await;
-    //     command_sender.shutdown().await;
-    // }
 
     // [utest->dsn~usubscription-change-notification-update~1]
     #[test_log::test(tokio::test)]
@@ -1009,24 +1095,22 @@ mod tests {
         let expected_notification = NotificationEvent::StateChange {
             subscriber: subscriber.clone().into(),
             topic: topic.clone(),
-            status: SubscriptionStatus {
-                state: State::UNSUBSCRIBE_PENDING.into(),
-                ..Default::default()
-            },
+            status: SubscriptionStatus::UnsubscribePending,
             respond_to,
         };
 
         let command_sender =
-            CommandSender::new_with_expected_notifications(vec![expected_notification]).await;
+            CommandSender::new_with_notification_manager(vec![expected_notification]).await;
 
         // We need a subscriber to topic, which we're subsequently expecting a state change notification to be sent to
-        // let subscribers = HashMap<TopicUUri, HashMap<SubscriberUUri, Option<ExpiryTimestamp>>>::new();
-        // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state.entry(topic.clone()).or_default();
-        entry.insert(subscriber.clone(), None);
+        let desired_state: Vec<SubscriptionInfo> = vec![SubscriptionInfo::new(
+            topic.clone(),
+            subscriber.clone(),
+            SubscriptionStatus::Subscribed,
+            None,
+            None,
+        )];
+
         assert!(command_sender
             .set_topic_subscribers(desired_state)
             .await
@@ -1035,13 +1119,13 @@ mod tests {
         let sender = command_sender
             .get_remote_subcription_change_sender()
             .await
-            .expect("Error retrieving remote-subscription change event command channel");
+            .expect("expecting internal data retrieval to work");
 
         // Initiate notification event
         let _ = sender
             .send(InternalSubscriptionEvent::TopicStateUpdate {
                 topic: topic.clone(),
-                state: State::UNSUBSCRIBE_PENDING,
+                state: SubscriptionStatus::UnsubscribePending,
             })
             .await;
 
@@ -1050,248 +1134,72 @@ mod tests {
         command_sender.shutdown().await;
     }
 
-    // [utest->req~usubscription-fetch-subscribers~1]
-    #[test_log::test(tokio::test)]
-    async fn test_fetch_subscribers() {
-        let command_sender = CommandSender::new();
-
-        // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic1_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri2(), None);
-
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic2_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri3(), None);
-
-        command_sender
-            .set_topic_subscribers(desired_state.clone())
-            .await
-            .expect("Interaction with subscription handler broken");
-
-        // Prepare things
-        let desired_topic = test_lib::helpers::local_topic1_uri();
-
-        // Operation to test
-        let result = command_sender
-            .fetch_subscribers(desired_topic.clone())
-            .await;
-        assert!(result.is_ok());
-
-        // Verify operation result
-        let fetch_subscribers_response = result.unwrap();
-        assert_eq!(fetch_subscribers_response.len(), 2);
-
-        for subscriber in fetch_subscribers_response {
-            #[allow(clippy::mutable_key_type)]
-            let expected_subscribers = desired_state.get(&desired_topic).unwrap();
-            assert!(expected_subscribers.contains_key(&subscriber));
-        }
-    }
-
-    // [utest->req~usubscription-fetch-subscriptions-by-subscriber~1]
-    #[test_log::test(tokio::test)]
-    async fn test_fetch_subscriptions_by_subscriber() {
-        let command_sender = CommandSender::new();
-
-        // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic1_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri2(), None);
-
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic2_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri3(), None);
-
-        command_sender
-            .set_topic_subscribers(desired_state.clone())
-            .await
-            .expect("Error during testing/setup of subscription manager");
-
-        // Prepare things
-        let desired_subscriber = test_lib::helpers::subscriber_uri1();
-
-        let mut expected_subscribers: Vec<(SubscriberUUri, TopicUUri)> = Vec::new();
-        for (topic, subscribers) in desired_state.clone() {
-            if subscribers.contains_key(&desired_subscriber) {
-                if let Some((subscriber, _expiry)) = subscribers.get_key_value(&desired_subscriber)
-                {
-                    expected_subscribers.push((subscriber.clone(), topic));
-                }
-            }
-        }
-
-        // Operation to test
-        let result = command_sender
-            .fetch_subscriptions(RequestKind::Subscriber(desired_subscriber.clone()))
-            .await;
-        assert!(result.is_ok());
-
-        // Verify operation result
-        let fetch_subscriptions_response = result.unwrap();
-
-        assert_eq!(
-            fetch_subscriptions_response.len(),
-            expected_subscribers.len()
-        );
-
-        for subscription in fetch_subscriptions_response {
-            let pair = (subscription.subscriber, subscription.topic);
-            assert!(expected_subscribers.contains(&pair));
-        }
-    }
-
-    // [utest->req~usubscription-fetch-subscriptions-by-topic~1]
-    #[test_log::test(tokio::test)]
-    async fn test_fetch_subscriptions_by_topic() {
-        let command_sender = CommandSender::new();
-
-        // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic1_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri2(), None);
-
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state
-            .entry(test_lib::helpers::local_topic2_uri())
-            .or_default();
-        entry.insert(test_lib::helpers::subscriber_uri1(), None);
-        entry.insert(test_lib::helpers::subscriber_uri3(), None);
-
-        command_sender
-            .set_topic_subscribers(desired_state.clone())
-            .await
-            .expect("Interaction with subscription handler broken");
-
-        // Prepare things
-        let desired_topic = test_lib::helpers::local_topic1_uri();
-
-        #[allow(clippy::mutable_key_type)]
-        let expected_subscribers = desired_state.get(&desired_topic).unwrap();
-
-        // Operation to test
-        let result = command_sender
-            .fetch_subscriptions(RequestKind::Topic(desired_topic.clone()))
-            .await;
-        assert!(result.is_ok());
-
-        // Verify operation result
-        let fetch_subscriptions_response = result.unwrap();
-
-        assert_eq!(
-            fetch_subscriptions_response.len(),
-            expected_subscribers.len()
-        );
-
-        for SubscriptionEntry {
-            topic,
-            subscriber,
-            status: _,
-        } in fetch_subscriptions_response
-        {
-            assert_eq!(topic, desired_topic);
-            assert!(expected_subscribers.contains_key(&subscriber));
-        }
-    }
-
     // [utest->req~usubscription-reset~1]
     #[test_log::test(tokio::test)]
     async fn test_reset_notifications() {
         // Prepare things
         let topic = test_lib::helpers::remote_topic1_uri();
         let subscriber = test_lib::helpers::subscriber_uri1();
-        let (respond_to_topic_subscriber, state_changed_topic_subscriber) =
+        let notification_client = test_lib::helpers::subscriber_uri2();
+
+        let (respond_to_subscriber_notification, state_changed_subscriber_notification) =
             oneshot::channel::<()>();
-        let (respond_to_notification_registrar, state_changed_notification_registrar) =
+        let (respond_to_direct_notification, state_changed_direct_notification) =
             oneshot::channel::<()>();
 
-        let expected_notification_topic_subscriber = NotificationEvent::StateChange {
+        let expected_subscriber_notification = NotificationEvent::StateChange {
             subscriber: subscriber.clone().into(),
             topic: topic.clone(),
-            status: SubscriptionStatus {
-                state: State::UNSUBSCRIBED.into(),
-                ..Default::default()
-            },
-            respond_to: respond_to_topic_subscriber,
+            status: SubscriptionStatus::Unsubscribed,
+            respond_to: respond_to_subscriber_notification,
         };
-        let expected_notification_notification_registrar = NotificationEvent::StateChange {
-            subscriber: test_lib::helpers::subscriber_uri2().into(),
-            topic: test_lib::helpers::local_topic2_uri(),
-            status: SubscriptionStatus {
-                state: State::UNSUBSCRIBED.into(),
-                ..Default::default()
-            },
-            respond_to: respond_to_notification_registrar,
+        let expected_direct_notification = NotificationEvent::StateChange {
+            subscriber: Some(notification_client.clone()),
+            topic: topic.clone(),
+            status: SubscriptionStatus::Unsubscribed,
+            respond_to: respond_to_direct_notification,
         };
 
-        let command_sender = CommandSender::new_with_expected_notifications(vec![
-            expected_notification_topic_subscriber,
-            expected_notification_notification_registrar,
+        let command_sender = CommandSender::new_with_notification_manager(vec![
+            expected_subscriber_notification,
+            expected_direct_notification,
         ])
         .await;
 
-        // We need a subscriber to topic, which we're subsequently expecting a state change notification to be sent to on reset
-        // let subscribers = HashMap<TopicUUri, HashMap<SubscriberUUri, Option<ExpiryTimestamp>>>::new();
-        // set starting state
-        #[allow(clippy::mutable_key_type)]
-        let mut desired_state: persistency::SubscriptionSet = HashMap::new();
-        #[allow(clippy::mutable_key_type)]
-        let entry = desired_state.entry(topic.clone()).or_default();
-        entry.insert(subscriber.clone(), None);
-        assert!(command_sender
-            .set_topic_subscribers(desired_state)
+        // We need a subscriber to topic, which we're subsequently expecting a state change notification to be sent about on reset
+        command_sender
+            .set_topic_subscribers(vec![SubscriptionInfo::new(
+                topic.clone(),
+                subscriber.clone(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            )])
             .await
-            .is_ok());
+            .expect("expecting internal message passing to work");
 
-        // Add a notification-registration to the mock backend, for which we subsequently expect a notifcation on reset
-        #[allow(clippy::mutable_key_type)]
-        let notification_topics_replacement: Vec<(SubscriberUUri, TopicUUri)> = vec![(
-            test_lib::helpers::subscriber_uri2(),
-            test_lib::helpers::local_topic2_uri(),
-        )];
-        assert!(command_sender
-            .set_notification_topics(notification_topics_replacement)
+        // Add a notification-client registration for which we subsequently expecting a notification on reset
+        command_sender
+            .set_notifyees(vec![notification_client])
             .await
-            .is_ok());
+            .expect("expecting internal message passing to work");
 
         // Perform reset
         command_sender
             .reset()
             .await
-            .expect("Error performing reset command");
+            .expect("expecting internal message passing to work");
 
-        // ensure that we have run through all the async layers and reached the notification assertion statements
-        assert!(state_changed_topic_subscriber.await.is_ok());
-        assert!(state_changed_notification_registrar.await.is_ok());
+        // these will come back once/if our expected notifications (above) have been sent() to the mock transport
+        assert!(state_changed_subscriber_notification.await.is_ok());
+        assert!(state_changed_direct_notification.await.is_ok());
 
         // Assert that topic subscriber lists is empty after reset
         // (We don't do the same thing for notification manager, because that is entirely mocked in the context of this suite of tests)
-        #[allow(clippy::mutable_key_type)]
         let subscribers = command_sender
             .get_topic_subscribers()
             .await
-            .expect("Error retrieving subscriber list after reset");
+            .expect("expecting internal data retrieval to work");
         assert!(subscribers.is_empty());
 
         command_sender.shutdown().await;
