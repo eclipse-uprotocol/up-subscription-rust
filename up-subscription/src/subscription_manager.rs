@@ -11,9 +11,9 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
+#[cfg(test)]
 use std::collections::HashMap;
 use std::{
-    collections::HashSet,
     sync::Arc,
     time::{Duration, SystemTime},
 };
@@ -61,12 +61,12 @@ pub(crate) enum SubscriptionEvent {
         topic: TopicUUri,
         expiration: Option<SystemTime>,
         sample_period: Option<Duration>,
-        respond_to: oneshot::Sender<SubscriptionStatus>,
+        respond_to: oneshot::Sender<SubscriptionInfo>,
     },
     RemoveSubscription {
         subscriber: SubscriberUUri,
         topic: TopicUUri,
-        respond_to: oneshot::Sender<SubscriptionStatus>,
+        respond_to: oneshot::Sender<SubscriptionInfo>,
     },
     FetchSubscriptions {
         subscriber_filter: Option<UUri>,
@@ -134,7 +134,6 @@ enum Event {
 /// * `command_receiver` - This is where the service outside API handlers post the subscription operation commands to.
 /// * `notification_sender` - Channel to the Notification manager, for issuing notification-related commands.
 /// * `shutdown` - When receiving a notification, will shutdown the handler loop.
-// [impl->req~usubscription-unsubscribe-notifications~1]
 // [impl->dsn~usubscription-state-machine~1]
 pub(crate) async fn handle_message(
     configuration: Arc<USubscriptionConfiguration>,
@@ -226,17 +225,16 @@ pub(crate) async fn handle_message(
                     ) {
                         // [impl->req~usubscription-subscribe-notifications~1]
                         // [impl->dsn~usubscription-change-notification-update~1]
-                        Ok(result) => {
+                        // [impl->req~usubscription-change-notification~1]
+                        Ok(subscription) => {
                             // Send topic state change notification
                             notification_manager::notify_state_change(
                                 notification_sender.clone(),
-                                Some(subscriber.clone()),
-                                topic.clone(),
-                                result.clone(),
+                                subscription.clone(),
                             )
                             .await;
 
-                            if respond_to.send(result).is_err() {
+                            if respond_to.send(subscription).is_err() {
                                 error!("Problem with internal communication");
                             }
                         }
@@ -261,18 +259,20 @@ pub(crate) async fn handle_message(
                         topic.clone(),
                     ) {
                         Ok(result) => {
-                            // Send topic state change notification
-                            // [impl->dsn~usubscription-change-notification-update~1]
-                            notification_manager::notify_state_change(
-                                notification_sender.clone(),
-                                Some(subscriber),
-                                topic,
-                                result.clone(),
-                            )
-                            .await;
+                            if let Some(subscription) = result {
+                                // Send topic state change notification
+                                // [impl->dsn~usubscription-change-notification-update~1]
+                                // [impl->req~usubscription-change-notification~1]
+                                // TODO should we include the full subscription info set (expiration, sample_period) in this unsubscribe notification?
+                                notification_manager::notify_state_change(
+                                    notification_sender.clone(),
+                                    subscription.clone(),
+                                )
+                                .await;
 
-                            if respond_to.send(result).is_err() {
-                                error!("Problem with internal communication");
+                                if respond_to.send(subscription).is_err() {
+                                    error!("Problem with internal communication");
+                                }
                             }
                         }
                         Err(e) => {
@@ -358,19 +358,26 @@ pub(crate) async fn handle_message(
                 InternalSubscriptionEvent::TopicStateUpdate { topic, state } => {
                     match remote_topics.set_topic_state(&topic, state.clone()) {
                         Ok(_) => {
-                            // We're supposed to send topic change notifications to any subscribers of topic
+                            // We're supposed to send topic change notifications to any (and only to) subscribers of topic
                             // [impl->dsn~usubscription-change-notification-update~1]
+                            // [impl->req~usubscription-subscribe-notifications~1]
+                            // [impl->req~usubscription-unsubscribe-notifications~1]
                             if let Ok(subscribers) = subscriptions.get_topic_subscribers(&topic) {
-                                let topic_clone = topic.clone();
                                 let notification_sender_clone = notification_sender.clone();
                                 // Want to do this out off the main control flow
                                 helpers::spawn_and_log_error(async move {
                                     for subscriber in subscribers {
+                                        // [impl->req~usubscription-change-notification~1]
+                                        // TODO we probably want expiration and sample_time info in this notification
                                         notification_manager::notify_state_change(
                                             notification_sender_clone.clone(),
-                                            Some(subscriber),
-                                            topic_clone.clone(),
-                                            state.clone(),
+                                            SubscriptionInfo::new(
+                                                subscriber,
+                                                topic.to_owned(),
+                                                state.to_owned(),
+                                                None,
+                                                None,
+                                            ),
                                         )
                                         .await;
                                     }
@@ -397,15 +404,17 @@ pub(crate) async fn handle_message(
                         topic.clone(),
                     ) {
                         Ok(result) => {
-                            // Send topic state change notification
-                            // [impl->dsn~usubscription-change-notification-update~1]
-                            notification_manager::notify_state_change(
-                                notification_sender.clone(),
-                                Some(subscriber),
-                                topic,
-                                result.clone(),
-                            )
-                            .await;
+                            if let Some(subscription) = result {
+                                // Send topic state change notification
+                                // [impl->dsn~usubscription-change-notification-update~1]
+                                // [impl->req~usubscription-change-notification~1]
+                                // TODO we probably want expiration and sample_time info in this notification
+                                notification_manager::notify_state_change(
+                                    notification_sender.clone(),
+                                    subscription,
+                                )
+                                .await;
+                            }
                         }
                         Err(e) => {
                             panic!("Persistency failure {e}")
@@ -429,18 +438,38 @@ fn add_subscription(
     topic: TopicUUri,
     expiration: Option<SystemTime>,
     sample_period: Option<Duration>,
-) -> Result<SubscriptionStatus, persistency::PersistencyError> {
+) -> Result<SubscriptionInfo, persistency::PersistencyError> {
+    // If subscribe request carries an expiration time, and if that is already in the past:
+    // short-cut to removal of potentially existing subscription and return of status Unsubscribed
+    // [impl->req~usubscription-past-subscription-expiration~1]
+    if let Some(expiration) = expiration {
+        if expiration < SystemTime::now() {
+            // if we have a susbcription for this topic that has expired, remove it and return according info set
+            if let Some(subscription) = remove_subscription(
+                uri_provider.clone(),
+                rpc_client.clone(),
+                internal_cmd_sender.clone(),
+                topic_subscribers,
+                remote_topics,
+                subscriber.clone(),
+                topic.clone(),
+            )? {
+                return Ok(subscription.with_status(SubscriptionStatus::Unsubscribed));
+            }
+        }
+    };
+
     let _ = topic_subscribers.add_subscription(&subscriber, &topic, expiration, sample_period)?;
 
     // For REMOTE topics, we explicitly track state due to _PENDING scenarios
     // [impl->req~usubscription-subscribe-multiple~1]
-    let state = if topic.is_remote_authority(&uri_provider.get_authority()) {
-        let state = remote_topics.add_topic_or_get_status(&topic)?;
+    let status = if topic.is_remote_authority(&uri_provider.get_authority()) {
+        let status = remote_topics.add_topic_or_get_status(&topic)?;
 
-        // if this remote topic is not yet SUBSCRIBED, perform remote subscription
+        // If this remote topic is not yet SUBSCRIBED, perform remote subscription
         // [impl->req~usubscription-subscribe-remote~1]
         // [impl->req~usubscription-subscribe-unsubscribe-pending~1]
-        if state != SubscriptionStatus::Subscribed {
+        if status != SubscriptionStatus::Subscribed {
             let topic_clone = topic.clone();
             let internal_cmd_sender_clone = internal_cmd_sender.clone();
             // we can only usefully instantiate a RpcClientUSubscription here, as this is the first time we know the relevant remote authority
@@ -466,7 +495,7 @@ fn add_subscription(
                 Ok(())
             });
         }
-        state
+        status
     } else {
         // Otherwise, LOCAL topics are considered to have status SUBSCRIBED as soon as they are registered here
         SubscriptionStatus::Subscribed
@@ -474,15 +503,27 @@ fn add_subscription(
 
     // Set up timed unsubscribe in case expiration timestamp is set
     // [impl->req~usubscription-subscribe-expiration~1]
-    // [impl->req~usubscription-subscribe-no-expiration~1]
     if let Some(expiration) = expiration {
-        schedule_unsubscribe(expiration, subscriber, topic, internal_cmd_sender);
+        schedule_unsubscribe(
+            expiration,
+            subscriber.clone(),
+            topic.clone(),
+            internal_cmd_sender,
+        );
     };
 
-    Ok(state)
+    Ok(SubscriptionInfo::new(
+        topic,
+        subscriber,
+        status,
+        expiration,
+        sample_period,
+    ))
 }
 
 // Remove a subscription relationship to bookkeeping, initiate remote unsubscribe request if neccessary
+// * returns `Option<SubscriptionInfo>` that contains subscription info of the terminated subscription if there was one, None otherwise
+// * returns a `PersistencyError` in case of problems with serialization of data or persistent storage
 fn remove_subscription(
     uri_provider: Arc<dyn LocalUriProvider>,
     rpc_client: Arc<dyn RpcClient>,
@@ -491,7 +532,18 @@ fn remove_subscription(
     remote_topics: &mut persistency::RemoteTopicsStore,
     subscriber: SubscriberUUri,
     topic: TopicUUri,
-) -> Result<SubscriptionStatus, persistency::PersistencyError> {
+) -> Result<Option<SubscriptionInfo>, persistency::PersistencyError> {
+    let Some(subscription_info) = subscription_info(
+        uri_provider.clone(),
+        topic_subscribers,
+        remote_topics,
+        &subscriber,
+        &topic,
+    )?
+    else {
+        return Ok(None);
+    };
+
     // if this was the last subscriber to topic and topic is remote
     // [impl->req~usubscription-unsubscribe-last-remote~1]
     // [impl->req~usubscription-unsubscribe-subscribe-pending~1]
@@ -522,17 +574,49 @@ fn remove_subscription(
     // [impl->req~usubscription-unsubscribe-remote-unsubscribed~1]
     Ok(
         // Whatever happens with the remote topic state - as far as the local client is concerned, it has now UNSUBSCRIBED from this topic
-        SubscriptionStatus::Unsubscribed,
+        Some(subscription_info.with_status(SubscriptionStatus::Unsubscribed)),
     )
 }
 
+// Retrieve full SubscriptionInfo for a specific topic-subscriber combination
+// * returns `Option<SubscriptionInfo>` that contains subscription info if present, None otherwise
+// * returns a `PersistencyError` in case of problems with serialization of data or persistent storage
+fn subscription_info(
+    uri_provider: Arc<dyn LocalUriProvider>,
+    topic_subscribers: &persistency::SubscriptionsStore,
+    remote_topics: &persistency::RemoteTopicsStore,
+    subscriber: &SubscriberUUri,
+    topic: &TopicUUri,
+) -> Result<Option<SubscriptionInfo>, persistency::PersistencyError> {
+    if let Some(result) = topic_subscribers.get_subscription_info(topic, subscriber)? {
+        if topic.is_remote_authority(&uri_provider.get_authority()) {
+            if let Some(state) = remote_topics.get_topic_state(topic)? {
+                return Ok(Some(SubscriptionInfo::new(
+                    result.topic().to_owned(),
+                    result.subscriber().to_owned(),
+                    state,
+                    *result.expiration(),
+                    *result.min_sample_period(),
+                )));
+            }
+        } else {
+            return Ok(Some(result));
+        }
+    }
+
+    Ok(None)
+}
+
 // Fetch all subscriptions of a topic or subscribers
+// [impl->req~usubscription-fetch-subscriptions~1]
 fn fetch_subscriptions(
     topic_subscribers: &persistency::SubscriptionsStore,
     remote_topics: &persistency::RemoteTopicsStore,
     subscriber_filter: &Option<UUri>,
     topic_filter: &Option<UUri>,
 ) -> Result<Vec<SubscriptionInfo>, persistency::PersistencyError> {
+    // [impl->req~usubscription-fetch-subscriptions-topic-filter~1]
+    // [impl->req~usubscription-fetch-subscriptions-subscriber-filter~1]
     let mut subscriptions =
         topic_subscribers.get_subscriptions_by_filter(topic_filter, subscriber_filter)?;
 
@@ -558,22 +642,13 @@ async fn reset(
     remote_topics: &mut persistency::RemoteTopicsStore,
     notification_sender: Sender<NotificationEvent>,
 ) {
-    let mut notification_map: HashMap<TopicUUri, HashSet<SubscriberUUri>> = HashMap::new();
+    // 1. Collect all topic-subscriber combinations that we're tracking plus direct-notification clients, as we need to notify each about the reset
     let subscriptions = topic_subscribers
         .get_all_subscriptions()
         .unwrap_or_else(|e| {
             error!("Error resetting subscriptions list: {e}");
             Vec::new()
         });
-
-    // 1. Collect all topic-subscriber combinations that we're tracking plus direct-notification clients, as we need to notify each about the reset
-    for subscription in subscriptions {
-        // first, add all regular topic-subscriber pairs to list of notification targets
-        notification_map
-            .entry(subscription.topic().clone())
-            .or_default()
-            .insert(subscription.subscriber().clone());
-    }
 
     // 2. Reset/clear all stored subscriptions, remote subscriptions and notification-registrations
     // We just report errors for now - re-subscribing to existing things should do no harm, in case a reset did now work
@@ -586,16 +661,10 @@ async fn reset(
 
     // 3. Notify every topic subscriber about the reset (all subscriptions are UNSUBSCRIBED now)
     //    Notification manager will use direct-notification client list for this, so we're not resetting that yet
-    for (topic, notification_targets) in notification_map {
-        for target in notification_targets {
-            notification_manager::notify_state_change(
-                notification_sender.clone(),
-                Some(target.clone()),
-                topic.clone(),
-                SubscriptionStatus::Unsubscribed,
-            )
-            .await;
-        }
+    for subscription in subscriptions {
+        // [impl->req~usubscription-change-notification~1]
+        // TODO we want expiration and sample_time for this?
+        notification_manager::notify_state_change(notification_sender.clone(), subscription).await;
     }
 
     // 4. Finally also reset direct-notification client list
@@ -615,7 +684,7 @@ async fn remote_subscribe(
     // [impl->dsn~usubscription-subscribe-remote-subscriber-change~1]
 
     // send request
-    // TODO: should we actually pass on expiration time to remote usubscription service? Or track (and unsubscribe) locally?
+    // We pass on expiration time to remote usubscription service, and also track expiration locally
     // [impl->req~usubscription-remote-max-timeout~1]
     let subscribe_response = subscription_client
         .subscribe(&topic, expiration, sample_period)
@@ -753,6 +822,7 @@ mod tests {
     }
 
     // [utest->req~usubscription-subscribe-expiration~1]
+    // [utest->req~usubscription-past-subscription-expiration~1]
     #[test_log::test(tokio::test)]
     async fn test_schedule_past_unsubscribe() {
         let (internal_cmd_sender, mut internal_cmd_receiver) =

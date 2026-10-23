@@ -175,6 +175,7 @@ impl SubscriptionsStore {
         // serialize inputs to types used in persistency
         let subscriber_string = subscriber.to_uri(PERSIST_UP_SCHEMA);
         let topic_string = topic.to_uri(PERSIST_UP_SCHEMA);
+        // [impl->req~usubscription-subscribe-expiration-extension~1]
         let metadata = SubscriptionMetadata::new(expiration, sample_period);
 
         let write_txn = self.persistency.begin_write().map_err(internal_err)?;
@@ -329,10 +330,43 @@ impl SubscriptionsStore {
         Ok(topics)
     }
 
+    /// Returns information about a specific subscription
+    /// * returns `Option<SubscriptionInfo>` that contains subscription info if present, None otherwise
+    /// * returns a `PersistencyError` in case of problems with serialization of data or persistent storage
+    pub(crate) fn get_subscription_info(
+        &self,
+        topic: &TopicUUri,
+        subscriber: &UUri,
+    ) -> Result<Option<SubscriptionInfo>, PersistencyError> {
+        let key = SubscriptionKey {
+            subscriber: subscriber.to_uri(PERSIST_UP_SCHEMA),
+            topic: topic.to_uri(PERSIST_UP_SCHEMA),
+        };
+
+        let read_txn = self.persistency.begin_read().map_err(internal_err)?;
+        let result = {
+            let table = read_txn.open_table(SUBSCRIPTIONS).map_err(internal_err)?;
+            table.get(key).map_err(internal_err)?.map(|entry| {
+                let entry = entry.value();
+                SubscriptionInfo::new(
+                    topic.clone(),
+                    subscriber.clone(),
+                    SubscriptionStatus::Subscribed,
+                    entry.expiration(),
+                    entry.sample_period(),
+                )
+            })
+        };
+        read_txn.close().map_err(internal_err)?;
+
+        Ok(result)
+    }
+
     /// Returns a list of all subscriptions stored in persistency
     /// * returns `Vec<SubscriptionInfo>` that contains all subscribers and their associated subscription topics
     /// * returns a `PersistencyError` in case of problems with serialization of data or manipulation of persist storage
     pub(crate) fn get_all_subscriptions(&self) -> Result<Vec<SubscriptionInfo>, PersistencyError> {
+        // [impl->req~usubscription-fetch-subscriptions~1]
         let mut subscriptions: Vec<SubscriptionInfo> = Vec::new();
 
         let read_txn = self.persistency.begin_read().map_err(internal_err)?;
@@ -385,9 +419,11 @@ impl SubscriptionsStore {
 
         // a `None` filter matches everything
         subcriptions.retain(|sub| {
+            // [impl->req~usubscription-fetch-subscriptions-topic-filter~1]
             topic_filter.as_ref().is_none_or(|f| f.matches(sub.topic()))
                 && subscriber_filter
                     .as_ref()
+                    // [impl->req~usubscription-fetch-subscriptions-subscriber-filter~1]
                     .is_none_or(|f| f.matches(sub.subscriber()))
         });
 
@@ -397,7 +433,6 @@ impl SubscriptionsStore {
     /// This function does two things
     /// - remove any subscription relationships from persistency that have an expiration timestamp that lies in the past
     /// - return all remaining subscription relationships which have an expiration timestamp that has not yet expired
-    // [impl->req~usubscription-subscribe-no-expiration~1]
     pub(crate) fn get_and_prune_expiring_subscriptions(
         &mut self,
     ) -> Result<Vec<(SubscriberUUri, TopicUUri, SystemTime)>, PersistencyError> {
@@ -420,6 +455,7 @@ impl SubscriptionsStore {
                 .map_err(internal_err)?;
 
             for (key, metadata) in entries {
+                // [impl->req~usubscription-subscribe-no-expiration~1]
                 let Some(expiration) = metadata.expiration() else {
                     continue;
                 };

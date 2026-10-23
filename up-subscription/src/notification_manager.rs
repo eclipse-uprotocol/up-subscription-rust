@@ -11,7 +11,10 @@
  * SPDX-License-Identifier: Apache-2.0
  ********************************************************************************/
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, SystemTime},
+};
 use tokio::sync::{mpsc::Receiver, mpsc::Sender, oneshot, Notify};
 use tracing::{debug, error, warn};
 
@@ -49,9 +52,11 @@ pub(crate) enum NotificationEvent {
         subscriber: SubscriberUUri,
     },
     StateChange {
-        subscriber: Option<SubscriberUUri>,
+        subscriber: SubscriberUUri,
         topic: TopicUUri,
         status: SubscriptionStatus,
+        expiration: Option<SystemTime>,
+        sample_period: Option<Duration>,
         respond_to: oneshot::Sender<()>,
     },
     Reset {
@@ -151,20 +156,19 @@ pub(crate) async fn notification_engine(
                 subscriber,
                 topic,
                 status,
+                expiration,
+                sample_period,
                 respond_to,
             } => {
                 // [impl->dsn~usubscription-change-notification-type~1]
-                let update = SubscriptionInfo::new(
-                    topic.clone(),
-                    subscriber.expect("msg"),
-                    status,
-                    None,
-                    None,
-                );
+                // [impl->req~usubscription-change-message-type~1]
+                let update =
+                    SubscriptionInfo::new(topic, subscriber, status, expiration, sample_period);
 
                 // Send Update message to general notification channel
                 // as per usubscription.proto RegisterForNotifications(NotificationsRequest)
                 // [impl->dsn~usubscription-change-notification-topic~1]
+                // [impl->req~usubscription-change-notification~1]
                 match UMessageBuilder::publish(usubscription_uri(
                     None,
                     RESOURCE_ID_SUBSCRIPTION_CHANGE,
@@ -249,16 +253,16 @@ pub(crate) async fn notification_engine(
 // `subscriber` is an Option, because in the case ob remote subscription state changes, there is no subscriber (other than local usubscription service)
 pub(crate) async fn notify_state_change(
     notification_sender: Sender<NotificationEvent>,
-    subscriber: Option<SubscriberUUri>,
-    topic: TopicUUri,
-    status: SubscriptionStatus,
+    subscription_info: SubscriptionInfo,
 ) {
     let (respond_to, receive_from) = oneshot::channel::<()>();
     if let Err(e) = notification_sender
         .send(NotificationEvent::StateChange {
-            subscriber,
-            topic,
-            status,
+            subscriber: subscription_info.subscriber().to_owned(),
+            topic: subscription_info.topic().to_owned(),
+            status: subscription_info.status().to_owned(),
+            expiration: *subscription_info.expiration(),
+            sample_period: *subscription_info.min_sample_period(),
             respond_to,
         })
         .await

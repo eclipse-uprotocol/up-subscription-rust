@@ -22,9 +22,7 @@ use tokio::{
 use tracing::{error, info};
 
 use up_rust::{
-    communication::{
-        InMemoryRpcClient, RequestHandler, ServiceInvocationError, SubscriptionStatus, UPayload,
-    },
+    communication::{InMemoryRpcClient, RequestHandler, ServiceInvocationError, UPayload},
     core::usubscription::{
         extract_usubscription_request, FetchSubscriptionsResponse, SubscribeResponse,
         SubscriptionInfo, USubscriptionRequest, USubscriptionResponse,
@@ -171,7 +169,7 @@ impl RequestHandler for USubscriptionService<Running> {
         #[allow(clippy::wildcard_enum_match_arm)]
         match request {
             USubscriptionRequest::Subscribe(req) => {
-                let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
+                let (respond_to, receive_from) = oneshot::channel::<SubscriptionInfo>();
                 let se = SubscriptionEvent::AddSubscription {
                     subscriber: message_attributes.source().clone(),
                     topic: req.topic.clone(),
@@ -185,18 +183,18 @@ impl RequestHandler for USubscriptionService<Running> {
                         "Error processing request".to_string(),
                     ));
                 }
-                let Ok(status) = receive_from.await else {
+                let Ok(subscription_info) = receive_from.await else {
                     return Err(ServiceInvocationError::Internal(
                         "Error processing request".to_string(),
                     ));
                 };
                 USubscriptionResponse::Subscribe(SubscribeResponse {
-                    topic: req.topic,
-                    status,
+                    topic: subscription_info.topic().to_owned(),
+                    status: subscription_info.status().to_owned(),
                 })
             }
             USubscriptionRequest::Unsubscribe(req) => {
-                let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
+                let (respond_to, receive_from) = oneshot::channel::<SubscriptionInfo>();
                 let se = SubscriptionEvent::RemoveSubscription {
                     subscriber: message_attributes.source().clone(),
                     topic: req.topic.clone(),

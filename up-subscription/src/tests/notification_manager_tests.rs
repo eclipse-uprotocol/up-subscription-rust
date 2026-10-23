@@ -98,9 +98,11 @@ mod tests {
 
             self.command_sender
                 .send(NotificationEvent::StateChange {
-                    subscriber: Some(subscriber),
+                    subscriber,
                     topic,
                     status,
+                    expiration: None,
+                    sample_period: None,
                     respond_to,
                 })
                 .await?;

@@ -38,7 +38,7 @@ mod tests {
         configuration::DEFAULT_COMMAND_BUFFER_SIZE,
         helpers,
         notification_manager::{self, NotificationEvent},
-        subscription_manager::{self, InternalSubscriptionEvent, SubscriptionEvent},
+        subscription_manager::{self, InternalSubscriptionEvent, SubscriptionEvent, UP_REMOTE_TTL},
         test_lib::{self, helpers::*, mocks::MockRpcClientMock},
         usubscription::{SubscriberUUri, TopicUUri},
         USubscriptionConfiguration,
@@ -82,10 +82,10 @@ mod tests {
                 loop {
                     tokio::select! {
                         Some(event) = notification_receiver.recv() => {
-                            if let NotificationEvent::StateChange { subscriber, topic, status, respond_to } = event {
+                            if let NotificationEvent::StateChange { subscriber, topic, status, expiration: _, sample_period: _, respond_to } = event {
                                debug!(
                                     "Change Notification received: {} - {} - {}",
-                                    subscriber.unwrap().to_uri(true),
+                                    subscriber.to_uri(true),
                                     topic.to_uri(true),
                                     status
                                 );
@@ -151,6 +151,8 @@ mod tests {
                         subscriber,
                         topic,
                         status,
+                        expiration: _,
+                        sample_period: _,
                         respond_to,
                     } => {
                         transport
@@ -160,10 +162,7 @@ mod tests {
                                     .extract_protobuf::<SubscriptionInfo>()
                                     .expect("expect message deserialization to work");
 
-                                subscriber
-                                    .clone()
-                                    .expect("expecting notification message to have a subscriber")
-                                    .eq(payload.subscriber())
+                                subscriber.clone().eq(payload.subscriber())
                                     && topic.eq(payload.topic())
                                     && status.eq(payload.status())
                             })
@@ -292,8 +291,8 @@ mod tests {
             subscriber: SubscriberUUri,
             expiration: Option<SystemTime>,
             sample_period: Option<Duration>,
-        ) -> Result<SubscriptionStatus, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
+        ) -> Result<SubscriptionInfo, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<SubscriptionInfo>();
             let command = SubscriptionEvent::AddSubscription {
                 subscriber,
                 topic,
@@ -309,8 +308,8 @@ mod tests {
             &self,
             topic: TopicUUri,
             subscriber: SubscriberUUri,
-        ) -> Result<SubscriptionStatus, Box<dyn Error>> {
-            let (respond_to, receive_from) = oneshot::channel::<SubscriptionStatus>();
+        ) -> Result<SubscriptionInfo, Box<dyn Error>> {
+            let (respond_to, receive_from) = oneshot::channel::<SubscriptionInfo>();
             let command = SubscriptionEvent::RemoveSubscription {
                 subscriber,
                 topic,
@@ -398,13 +397,26 @@ mod tests {
                 .await?;
             Ok(receive_from.await?)
         }
-
         async fn reset(&self) -> Result<(), Box<dyn Error>> {
             let (respond_to, receive_from) = oneshot::channel::<()>();
             let command = SubscriptionEvent::Reset { respond_to };
 
             self.command_sender.send(command).await?;
             Ok(receive_from.await?)
+        }
+
+        async fn topic_state_update(
+            &self,
+            topic: TopicUUri,
+            state: SubscriptionStatus,
+        ) -> Result<(), Box<dyn Error>> {
+            let sender = self.get_remote_subcription_change_sender().await?;
+
+            // let (respond_to, receive_from) = oneshot::channel::<()>();
+            let command = InternalSubscriptionEvent::TopicStateUpdate { topic, state };
+            sender.send(command).await?;
+
+            Ok(())
         }
 
         async fn get_remote_subcription_change_sender(
@@ -450,11 +462,11 @@ mod tests {
             // Operation to test
             let result = command_sender
                 .subscribe(topic, subscriber, None, None)
-                .await;
-            assert!(result.is_ok());
+                .await
+                .expect("expecting message passing to work");
 
             // Verify operation result content
-            assert_eq!(result.unwrap(), SubscriptionStatus::Subscribed);
+            assert_eq!(*result.status(), SubscriptionStatus::Subscribed);
         }
 
         // Verify iternal bookeeping
@@ -471,8 +483,9 @@ mod tests {
 
     // [utest->req~usubscription-subscribe-expiration~1]
     // [utest->req~usubscription-subscribe-no-expiration~1]
+    // [utest->req~usubscription-past-subscription-expiration~1]
     #[test_log::test(tokio::test)]
-    async fn test_subscribe_with_expiry() {
+    async fn test_subscribe_with_expiration() {
         let command_sender = CommandSender::new();
 
         // Prepare things
@@ -488,21 +501,21 @@ mod tests {
                 test_lib::helpers::subscriber_uri2(),
                 test_lib::helpers::local_topic2_uri(),
                 SubscriptionStatus::Subscribed,
-                Some(SystemTime::now() - Duration::from_secs(10)), // expired subscription
+                Some(SystemTime::now() + Duration::from_secs(10)), // yet to expire subscription
                 None,
             ),
             SubscriptionInfo::new(
                 test_lib::helpers::subscriber_uri3(),
                 test_lib::helpers::local_topic2_uri(),
                 SubscriptionStatus::Subscribed,
-                Some(SystemTime::now() + Duration::from_secs(10)), // yet to expire subscription
+                Some(SystemTime::now() - Duration::from_secs(10)), // expired subscription
                 None,
             ),
         ];
 
         for entry in desired_state.iter() {
             // Operation to test
-            let status = command_sender
+            command_sender
                 .subscribe(
                     entry.topic().clone(),
                     entry.subscriber().clone(),
@@ -511,8 +524,6 @@ mod tests {
                 )
                 .await
                 .expect("expecting internal message passing to work");
-            // Verify operation result content
-            assert_eq!(status, SubscriptionStatus::Subscribed);
         }
 
         // Verify iternal bookeeping
@@ -520,10 +531,90 @@ mod tests {
             .get_topic_subscribers()
             .await
             .expect("expecting internal data retrieval to work");
-        desired_state.remove(1); // Remote item that has expiry timestamp in the past, so hasn't been added by subscription manager
+        desired_state.pop(); // Remote item that has expiry timestamp in the past, so hasn't been added by subscription manager
 
         assert_eq!(desired_state.len(), actual_subscribers.len());
         assert!(desired_state.iter().all(|x| actual_subscribers.contains(x)));
+    }
+
+    // [utest->req~usubscription-subscribe-expiration-extension~1]
+    #[test_log::test(tokio::test)]
+    async fn test_update_expiration() {
+        let command_sender = CommandSender::new();
+
+        // set up initial state
+        let result = command_sender
+            .subscribe(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                Some(SystemTime::now() + Duration::from_secs(10)),
+                None,
+            )
+            .await
+            .expect("expecting internal message passing to work");
+        assert_eq!(*result.status(), SubscriptionStatus::Subscribed);
+
+        let new_expiration = SystemTime::now() + Duration::from_secs(100);
+        let result = command_sender
+            .subscribe(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                Some(new_expiration),
+                None,
+            )
+            .await
+            .expect("expecting internal message passing to work");
+
+        // Verify operation result content
+        assert_eq!(*result.status(), SubscriptionStatus::Subscribed);
+        let subs = command_sender
+            .fetch_subscriptions(None, None)
+            .await
+            .expect("expecting internal message passing to work");
+        assert_eq!(subs.len(), 1);
+        assert_eq!(
+            new_expiration,
+            subs.first()
+                .expect("expecting one subscription entry")
+                .expiration()
+                .expect("expecting a subscription expiration entry")
+        );
+    }
+
+    // [utest->req~usubscription-past-subscription-expiration~1]
+    #[test_log::test(tokio::test)]
+    async fn test_update_expiration_to_past_timestamp() {
+        let command_sender = CommandSender::new();
+
+        // set up initial state
+        let result = command_sender
+            .subscribe(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                Some(SystemTime::now() + Duration::from_secs(10)), // initial subscription has a future expiration timestamp
+                None,
+            )
+            .await
+            .expect("expecting internal message passing to work");
+        assert_eq!(*result.status(), SubscriptionStatus::Subscribed);
+
+        let result = command_sender
+            .subscribe(
+                test_lib::helpers::local_topic1_uri(),
+                test_lib::helpers::subscriber_uri1(),
+                Some(SystemTime::now() - Duration::from_secs(10)), // now set expiration timestamp into the past
+                None,
+            )
+            .await
+            .expect("expecting internal message passing to work");
+
+        // Verify operation result content
+        assert_eq!(*result.status(), SubscriptionStatus::Unsubscribed);
+        let subs = command_sender
+            .fetch_subscriptions(None, None)
+            .await
+            .expect("expecting internal message passing to work");
+        assert_eq!(subs.len(), 0);
     }
 
     // [utest->req~usubscription-subscribe-remote~1]
@@ -573,16 +664,15 @@ mod tests {
                 None,
                 None,
             )
-            .await;
-        assert!(result.is_ok());
+            .await
+            .expect("expecting message passing to work");
 
         // Verify operation result content
-        let subscription_status = result.unwrap();
         // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
         // this might be SUBSCRIBE_PENDING or SUBSCRIBED
         assert!(
-            subscription_status == SubscriptionStatus::SubscribePending
-                || subscription_status == SubscriptionStatus::Subscribed
+            *result.status() == SubscriptionStatus::SubscribePending
+                || *result.status() == SubscriptionStatus::Subscribed
         );
 
         // Verify iternal bookeeping
@@ -602,6 +692,94 @@ mod tests {
                 == SubscriptionStatus::SubscribePending
                 || *remote_topics.get(&remote_topic.clone()).unwrap()
                     == SubscriptionStatus::Subscribed
+        );
+    }
+
+    // [utest->req~usubscription-unsubscribe-subscribe-pending~1]
+    #[test_log::test(tokio::test)]
+    async fn test_remote_pending_unsubscribe() {
+        // Prepare things
+        let remote_topic = test_lib::helpers::remote_topic1_uri();
+        let subscriber = test_lib::helpers::subscriber_uri1();
+
+        // prepare CommandSender that accepts remote unsubscribe request
+        let remote_unsubscribe_request = UnsubscribeRequest {
+            topic: remote_topic.clone(),
+        };
+        let remote_unsubscribe_response = UStatus::ok();
+        let mut expected_invocations: HashMap<UUri, ExpectedInvocation> = HashMap::new();
+        expected_invocations.insert(
+            usubscription_uri(
+                Some(remote_topic.authority_name()),
+                up_rust::core::usubscription::RESOURCE_ID_UNSUBSCRIBE,
+            ),
+            ExpectedInvocation {
+                call_options: Some(CallOptions::for_rpc_request(
+                    UP_REMOTE_TTL,
+                    None,
+                    None,
+                    None,
+                )),
+                request_payload: Some(
+                    UPayload::try_from_protobuf(remote_unsubscribe_request)
+                        .expect("expecting payload serialization to work"),
+                ),
+                response_payload: Some(
+                    UPayload::try_from_protobuf(remote_unsubscribe_response)
+                        .expect("expecting payload serialization to work"),
+                ),
+            },
+        );
+        let command_sender = CommandSender::new_with_rpcclient_mock(expected_invocations).await;
+
+        let mut remote_topics_replacement = HashMap::new();
+        remote_topics_replacement
+            .insert(remote_topic.clone(), SubscriptionStatus::SubscribePending);
+        command_sender
+            .set_remote_topics(remote_topics_replacement)
+            .await
+            .expect("expecting test setup preparation to work");
+
+        command_sender
+            .set_topic_subscribers(vec![SubscriptionInfo::new(
+                remote_topic.clone(),
+                subscriber.clone(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            )])
+            .await
+            .expect("expecting internal message passing to work");
+
+        // Operation to test
+        let result = command_sender
+            .unsubscribe(remote_topic.clone(), subscriber.clone())
+            .await
+            .expect("expecting internal data retrieval to work");
+
+        // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
+        // this might be SUBSCRIBE_PENDING or SUBSCRIBED
+        assert_eq!(*result.status(), SubscriptionStatus::Unsubscribed);
+
+        // Verify iternal bookeeping
+        let topic_subscribers = command_sender
+            .get_topic_subscribers()
+            .await
+            .expect("expecting internal data retrieval to work");
+        assert!(topic_subscribers.is_empty());
+
+        let remote_topics = command_sender
+            .get_remote_topics()
+            .await
+            .expect("expecting internal data retrieval to work");
+        assert_eq!(remote_topics.len(), 1);
+        // Depending on timing of the various async operations involved in remote subscriptions and bookkeeping updates,
+        // this might be SUBSCRIBE_PENDING or SUBSCRIBED
+        assert_eq!(
+            remote_topics
+                .get(&remote_topic)
+                .expect("expecting a value for this key"),
+            &SubscriptionStatus::UnsubscribePending
         );
     }
 
@@ -699,7 +877,7 @@ mod tests {
             .expect("expecting internal message passing to work");
 
         // Operation to test
-        let subscription_status = command_sender
+        let result = command_sender
             .unsubscribe(
                 test_lib::helpers::local_topic1_uri(),
                 test_lib::helpers::subscriber_uri1(),
@@ -708,7 +886,7 @@ mod tests {
             .expect("expecting internal message passing to work");
 
         // Verify operation result content
-        assert_eq!(subscription_status, SubscriptionStatus::Unsubscribed);
+        assert_eq!(*result.status(), SubscriptionStatus::Unsubscribed);
 
         // Verify iternal bookeeping
         let topic_subscribers = command_sender
@@ -747,7 +925,7 @@ mod tests {
             .expect("expecting internal message passing to work");
 
         // Operation to test
-        let subscription_status = command_sender
+        let result = command_sender
             .unsubscribe(
                 test_lib::helpers::local_topic1_uri(),
                 test_lib::helpers::subscriber_uri1(),
@@ -756,7 +934,7 @@ mod tests {
             .expect("expecting internal message passing to work");
 
         // Verify operation result content
-        assert_eq!(subscription_status, SubscriptionStatus::Unsubscribed);
+        assert_eq!(*result.status(), SubscriptionStatus::Unsubscribed);
 
         // Verify iternal bookeeping
         let topic_subscribers = command_sender
@@ -788,7 +966,12 @@ mod tests {
                 up_rust::core::usubscription::RESOURCE_ID_UNSUBSCRIBE,
             ),
             ExpectedInvocation {
-                call_options: None,
+                call_options: Some(CallOptions::for_rpc_request(
+                    UP_REMOTE_TTL,
+                    None,
+                    None,
+                    None,
+                )),
                 request_payload: Some(
                     UPayload::try_from_protobuf(remote_unsubscribe_request)
                         .expect("expecting payload serialization to work"),
@@ -825,13 +1008,12 @@ mod tests {
         // Operation to test
         let result = command_sender
             .unsubscribe(remote_topic.clone(), test_lib::helpers::subscriber_uri1())
-            .await;
-        assert!(result.is_ok());
+            .await
+            .expect("expecting message passing to work");
 
         // Verify operation result content
-        let subscription_status = result.unwrap();
         assert_eq!(
-            subscription_status,
+            *result.status(),
             // No matter what happens to the remove topic state, as far as the local client is concerned this is now an UNSUBSCRIBED topic
             SubscriptionStatus::Unsubscribed
         );
@@ -903,13 +1085,13 @@ mod tests {
             .expect("expecting internal message passing to work");
 
         // Operation to test
-        let subscription_status = command_sender
+        let result = command_sender
             .unsubscribe(remote_topic.clone(), test_lib::helpers::subscriber_uri1())
             .await
             .expect("expecting internal data retrieval to work");
 
         assert_eq!(
-            subscription_status,
+            *result.status(),
             // this client immediately is getting UNSUBSCRIBED, no _PENDING, as for it the op is done
             SubscriptionStatus::Unsubscribed
         );
@@ -944,6 +1126,9 @@ mod tests {
     #[test_case(None, Some(UUri::try_from_parts(LOCAL_AUTHORITY, 0xFFFF_FFFF, 0xFF, 0xFFFF).expect("expecting test UUri setup to work")), 6; "All subscriptions to local topics")]
     #[test_case(None, Some(UUri::try_from_parts(REMOTE_AUTHORITY, 0xFFFF_FFFF, 0xFF, 0xFFFF).expect("expecting test UUri setup to work")), 1; "All subscriptions to remote topics")]
     #[test_log::test(tokio::test)]
+    // [utest->req~usubscription-fetch-subscriptions~1]
+    // [utest->req~usubscription-fetch-subscriptions-topic-filter~1]
+    // [utest->req~usubscription-fetch-subscriptions-subscriber-filter~1]
     async fn test_fetch_subscriptions(
         subscriber_filter: Option<UUri>,
         topic_filter: Option<UUri>,
@@ -1017,34 +1202,157 @@ mod tests {
     }
 
     // [utest->req~usubscription-subscribe-notifications~1]
-    // [utest->dsn~usubscription-change-notification-update~1]
+    // [utest->req~usubscription-change-notification~1]
+    // [utest->req~usubscription-change-message-type~1]
     #[test_log::test(tokio::test)]
-    async fn test_local_subscribe_notification() {
+    async fn test_subscriber_notifications() {
         // Prepare things
         let topic = test_lib::helpers::local_topic1_uri();
-        let subscriber = test_lib::helpers::subscriber_uri1();
-        let (respond_to, state_changed) = oneshot::channel::<()>();
+        let subscriber1 = test_lib::helpers::subscriber_uri1();
+        let subscriber2 = test_lib::helpers::subscriber_uri2();
+        let (respond_to1, state_changed1) = oneshot::channel::<()>();
+        let (respond_to2, state_changed2) = oneshot::channel::<()>();
 
-        let expected_notification = NotificationEvent::StateChange {
-            subscriber: subscriber.clone().into(),
-            topic: topic.clone(),
-            status: SubscriptionStatus::Subscribed,
-            respond_to,
-        };
+        let expected_notifications = vec![
+            NotificationEvent::StateChange {
+                subscriber: subscriber1.clone(),
+                topic: topic.clone(),
+                status: SubscriptionStatus::UnsubscribePending,
+                expiration: None,
+                sample_period: None,
+                respond_to: respond_to1,
+            },
+            NotificationEvent::StateChange {
+                subscriber: subscriber2.clone(),
+                topic: topic.clone(),
+                status: SubscriptionStatus::UnsubscribePending,
+                expiration: None,
+                sample_period: None,
 
+                respond_to: respond_to2,
+            },
+        ];
         let command_sender =
-            CommandSender::new_with_notification_manager(vec![expected_notification]).await;
+            CommandSender::new_with_notification_manager(expected_notifications).await;
 
-        // Operation to test
-        let result = command_sender
-            .subscribe(topic, subscriber, None, None)
-            .await;
-        assert!(result.is_ok());
+        // set starting state
+        let desired_state: Vec<SubscriptionInfo> = vec![
+            SubscriptionInfo::new(
+                topic.clone(),
+                subscriber1.clone(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                topic.clone(),
+                subscriber2.clone(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+        ];
+        command_sender
+            .set_topic_subscribers(desired_state)
+            .await
+            .expect("expecting internal message passing to work");
 
-        let _ = state_changed.await;
+        // initiate topic state change - should result in notifications to both subscribed clients
+        command_sender
+            .topic_state_update(topic.clone(), SubscriptionStatus::UnsubscribePending)
+            .await
+            .expect("expecting internal command passing to work");
+
+        state_changed1
+            .await
+            .expect("expecting a state change notification");
+        state_changed2
+            .await
+            .expect("expecting a state change notification");
+
         command_sender.shutdown().await;
     }
 
+    // [utest->req~usubscription-unsubscribe-notifications~1]
+    #[test_log::test(tokio::test)]
+    async fn test_unsubscribe_stops_notifications() {
+        // Prepare things
+        let topic = test_lib::helpers::local_topic1_uri();
+        let subscriber1 = test_lib::helpers::subscriber_uri1();
+        let subscriber2 = test_lib::helpers::subscriber_uri2();
+        let (respond_to1, state_changed1) = oneshot::channel::<()>();
+        let (respond_to2, state_changed2) = oneshot::channel::<()>();
+
+        let expected_notifications = vec![
+            NotificationEvent::StateChange {
+                subscriber: subscriber1.clone(),
+                topic: topic.clone(),
+                status: SubscriptionStatus::Unsubscribed,
+                expiration: None,
+                sample_period: None,
+
+                respond_to: respond_to1,
+            },
+            NotificationEvent::StateChange {
+                subscriber: subscriber2.clone(),
+                topic: topic.clone(),
+                status: SubscriptionStatus::UnsubscribePending,
+                expiration: None,
+                sample_period: None,
+
+                respond_to: respond_to2,
+            },
+        ];
+        let command_sender =
+            CommandSender::new_with_notification_manager(expected_notifications).await;
+
+        // set starting state
+        let desired_state: Vec<SubscriptionInfo> = vec![
+            SubscriptionInfo::new(
+                topic.clone(),
+                subscriber1.clone(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+            SubscriptionInfo::new(
+                topic.clone(),
+                subscriber2.clone(),
+                SubscriptionStatus::Subscribed,
+                None,
+                None,
+            ),
+        ];
+        command_sender
+            .set_topic_subscribers(desired_state)
+            .await
+            .expect("expecting internal message passing to work");
+
+        // we have set up two subscribers of a topic, both are notified on changes (tested by utest->req~usubscription-subscribe-notifications~1)
+        // so we unsubscribe subscriber1, and now only subscriber2 should get a notification on topic-subscription related chages
+        let _status = command_sender
+            .unsubscribe(topic.clone(), subscriber1.clone())
+            .await
+            .expect("expecting internal message passing to work");
+        // the first change notification is about the unsubscribe operation - take that one, but this is not the object of test
+        state_changed1
+            .await
+            .expect("expecting a state change notification");
+
+        // initiate first topic state change - should result in notifications to both subscribed clients
+        command_sender
+            .topic_state_update(topic.clone(), SubscriptionStatus::UnsubscribePending)
+            .await
+            .expect("expecting internal command passing to work");
+        // at this point, we're only expecting subscriber2 to be notified of the topic change, as subscriber1 has already unsubscribed
+        state_changed2
+            .await
+            .expect("expecting a state change notification");
+
+        command_sender.shutdown().await;
+    }
+
+    // [utest->req~usubscription-subscribe-notifications~1]
     // [utest->dsn~usubscription-change-notification-update~1]
     #[test_log::test(tokio::test)]
     async fn test_local_unsubscribe_notification() {
@@ -1062,9 +1370,11 @@ mod tests {
         let (respond_to, state_changed) = oneshot::channel::<()>();
 
         let expected_notification = NotificationEvent::StateChange {
-            subscriber: subscriber.clone().into(),
+            subscriber: subscriber.clone(),
             topic: topic.clone(),
             status: SubscriptionStatus::Unsubscribed,
+            expiration: None,
+            sample_period: None,
             respond_to,
         };
 
@@ -1093,9 +1403,12 @@ mod tests {
         let (respond_to, state_changed) = oneshot::channel::<()>();
 
         let expected_notification = NotificationEvent::StateChange {
-            subscriber: subscriber.clone().into(),
+            subscriber: subscriber.clone(),
             topic: topic.clone(),
             status: SubscriptionStatus::UnsubscribePending,
+            expiration: None,
+            sample_period: None,
+
             respond_to,
         };
 
@@ -1148,15 +1461,21 @@ mod tests {
             oneshot::channel::<()>();
 
         let expected_subscriber_notification = NotificationEvent::StateChange {
-            subscriber: subscriber.clone().into(),
+            subscriber: subscriber.clone(),
             topic: topic.clone(),
             status: SubscriptionStatus::Unsubscribed,
+            expiration: None,
+            sample_period: None,
+
             respond_to: respond_to_subscriber_notification,
         };
         let expected_direct_notification = NotificationEvent::StateChange {
-            subscriber: Some(notification_client.clone()),
+            subscriber: notification_client.clone(),
             topic: topic.clone(),
             status: SubscriptionStatus::Unsubscribed,
+            expiration: None,
+            sample_period: None,
+
             respond_to: respond_to_direct_notification,
         };
 
