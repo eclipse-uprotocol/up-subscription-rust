@@ -53,11 +53,11 @@ jobs:
       - coverage
       - licenses
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Upload README
         id: upload_readme
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: readme
           path: README.md
@@ -72,7 +72,7 @@ jobs:
           artifacts_testing: ${{ needs.check.outputs.test_results_url }},${{ needs.coverage.outputs.test_coverage_url }}
 
       - name: Store quality manifest as workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: quality-artifacts-manifest
           path: ${{ steps.quevee.outputs.manifest_file }}
@@ -88,11 +88,11 @@ jobs:
       - licenses
     permissions: write-all
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # License report - we later need the download_url output of the upload step
       - name: Download license report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: license-report
           path: dist/license/
@@ -107,7 +107,7 @@ jobs:
 
       # Test report - we later need the download_url output of the upload step
       - name: Download test report
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: test-results
           path: dist/tests/
@@ -122,7 +122,7 @@ jobs:
 
       # Test coverage - we later need the download_url output of the upload step
       - name: Download test coverage
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: code-coverage-html
           path: dist/codecov/
@@ -146,7 +146,7 @@ jobs:
 
       - name: Gets latest created release info
         id: latest_release_info
-        uses: joutvhu/get-release@v1
+        uses: joutvhu/get-release@8c3531bba0d249f5e7c3d7e1954d34db9edf2a90 # v1.0.4
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
@@ -176,7 +176,7 @@ jobs:
     env: 
       CRATES_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - if: env.CRATES_TOKEN == ''
         run: cargo publish --package up-subscription --all-features --dry-run
