@@ -43,7 +43,6 @@ impl RequestHandler for ResetHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-reset-protobuf~1]
         let (_reset_request, source) = helpers::extract_inputs::<ResetRequest>(
             RESOURCE_ID_RESET,
             resource_id,
@@ -93,7 +92,6 @@ mod tests {
 
     use crate::tests::test_lib;
 
-    // [utest->dsn~usubscription-reset-protobuf~1]
     #[test_log::test(tokio::test)]
     async fn test_reset_success() {
         // create request and other required object(s)

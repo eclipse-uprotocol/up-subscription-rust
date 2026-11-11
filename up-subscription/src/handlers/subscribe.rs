@@ -46,7 +46,6 @@ impl RequestHandler for SubscriptionRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-subscribe-protobuf~1]
         let (subscription_request, source) = helpers::extract_inputs::<SubscriptionRequest>(
             RESOURCE_ID_SUBSCRIBE,
             resource_id,
@@ -59,7 +58,6 @@ impl RequestHandler for SubscriptionRequestHandler {
             ));
         };
 
-        // [impl->dsn~usubscription-subscribe-invalid-topic~1]
         helpers::validate_uri(topic).map_err(|e| {
             ServiceInvocationError::InvalidArgument(format!("Invalid topic uri '{topic}': {e}"))
         })?;
@@ -131,7 +129,6 @@ mod tests {
 
     use crate::tests::test_lib;
 
-    // [utest->dsn~usubscription-subscribe-protobuf~1]
     #[test_log::test(tokio::test)]
     async fn test_subscribe_success() {
         // create request and other required object(s)
@@ -393,7 +390,6 @@ mod tests {
         assert!(result.is_err_and(|e| matches!(e, ServiceInvocationError::InvalidArgument(_))));
     }
 
-    // [utest->dsn~usubscription-subscribe-invalid-topic~1]
     #[test_case("up:/0/0/0"; "Bad topic UUri")]
     #[test_case("up://*/100000/1/8AC7"; "Wildcard authority in topic UUri")]
     #[test_case("up://local/FFFF0000/1/8AC7"; "Wildcard entity id in topic UUri")]

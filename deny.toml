@@ -19,14 +19,9 @@ multiple-versions = "allow"
 
 # If you add a license in the following section also consider changing about.toml
 [licenses]
-allow = ["Apache-2.0", "BSD-2-Clause", "MIT", "Unicode-3.0"]
+allow = ["Apache-2.0", "MIT", "MIT-0", "Unicode-3.0"]
 
 [[licenses.clarify]]
 name = "ring"
 expression = "MIT AND ISC AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
-
-[advisories]
-ignore = [
-    "RUSTSEC-2026-0007", # We perform integer overflow checks also in release builds
-]

@@ -24,8 +24,9 @@ version.workspace = true
 [dependencies]
 async-trait = { workspace = true }
 pickledb = { version = "0.5.1" }
-protobuf = { workspace = true }
-serde = { version = "1.0" }
+redb = { version = "4.4.0" }
+redb-derive = { version = "0.2.0" }
+serde = { version = "1.0.229" }
 tokio = { workspace = true }
 tracing = { workspace = true }
 up-rust = { workspace = true }
@@ -33,7 +34,9 @@ up-rust = { workspace = true }
 [dev-dependencies]
 mockall = { workspace = true }
 test-case = { workspace = true }
-test-log ={ version = "0.2", default-features = false, features = ["trace"] }
+test-log = { version = "0.2.21", default-features = false, features = [
+    "trace",
+] }
 up-rust = { workspace = true, features = ["test-util"] }
 
 [package.metadata.dist]

@@ -44,7 +44,6 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-unregister-notifications-protobuf~1]
         let (notification_request, source) = helpers::extract_inputs::<NotificationsRequest>(
             RESOURCE_ID_UNREGISTER_FOR_NOTIFICATIONS,
             resource_id,
@@ -58,7 +57,6 @@ impl RequestHandler for UnregisterNotificationsRequestHandler {
             ));
         };
 
-        // [impl->dsn~usubscription-unregister-notifications-invalid-topic~1]
         helpers::validate_uri(topic).map_err(|e| {
             ServiceInvocationError::InvalidArgument(format!("Invalid topic uri '{topic}': {e}"))
         })?;
@@ -100,7 +98,6 @@ mod tests {
 
     use crate::tests::test_lib;
 
-    // [utest->dsn~usubscription-unregister-notifications-protobuf~1]
     #[test_log::test(tokio::test)]
     async fn test_unregister_notification_success() {
         // create request and other required object(s)
@@ -246,7 +243,6 @@ mod tests {
         assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
-    // [utest->dsn~usubscription-unregister-notifications-invalid-topic~1]
     #[test_case("up:/0/0/0"; "Bad topic UUri")]
     #[test_case("up://*/100000/1/8AC7"; "Wildcard authority in topic UUri")]
     #[test_case("up://local/FFFF0000/1/8AC7"; "Wildcard entity id in topic UUri")]

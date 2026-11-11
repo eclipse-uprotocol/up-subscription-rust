@@ -37,8 +37,8 @@ pub(crate) async fn get_mqtt5_transport(
                     })
                     .when(|err| {
                         // no need to keep retrying if authentication or permission is denied
-                        err.get_code() != UCode::UNAUTHENTICATED
-                            && err.get_code() != UCode::PERMISSION_DENIED
+                        err.get_code() != UCode::Unauthenticated
+                            && err.get_code() != UCode::PermissionDenied
                     })
                     .await?;
     info!("Connected to MQTT5 broker");

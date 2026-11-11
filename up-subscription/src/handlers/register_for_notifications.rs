@@ -44,7 +44,6 @@ impl RequestHandler for RegisterNotificationsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-register-notifications-protobuf~1]
         let (register_for_notifications_request, source) =
             helpers::extract_inputs::<NotificationsRequest>(
                 RESOURCE_ID_REGISTER_FOR_NOTIFICATIONS,
@@ -57,7 +56,6 @@ impl RequestHandler for RegisterNotificationsRequestHandler {
                 "No topic defined in request".to_string(),
             ));
         };
-        // [impl->dsn~usubscription-register-notifications-invalid-topic~1]
         helpers::validate_uri(topic).map_err(|e| {
             ServiceInvocationError::InvalidArgument(format!("Invalid topic uri '{topic}': {e}"))
         })?;
@@ -94,7 +92,6 @@ mod tests {
 
     use crate::tests::test_lib;
 
-    // [utest->dsn~usubscription-register-notifications-protobuf~1]
     #[test_log::test(tokio::test)]
     async fn test_register_notification_success() {
         // create request and other required object(s)
@@ -240,7 +237,6 @@ mod tests {
         assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
-    // [utest->dsn~usubscription-register-notifications-invalid-topic~1]
     #[test_case(UUri::default(); "Bad topic UUri")]
     #[test_case(UUri {
             authority_name: String::from("*"),

@@ -45,7 +45,6 @@ impl RequestHandler for FetchSubscribersRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-fetch-subscribers-protobuf~1]
         let (fetch_subscribers_request, _source) =
             helpers::extract_inputs::<FetchSubscribersRequest>(
                 RESOURCE_ID_FETCH_SUBSCRIBERS,
@@ -60,7 +59,6 @@ impl RequestHandler for FetchSubscribersRequestHandler {
             ));
         };
 
-        // [impl->dsn~usubscription-fetch-subscribers-invalid-topic~1]
         helpers::validate_uri(&topic).map_err(|e| {
             ServiceInvocationError::InvalidArgument(format!("Invalid topic uri '{topic}': {e}"))
         })?;
@@ -113,7 +111,6 @@ mod tests {
 
     use crate::tests::test_lib;
 
-    // [utest->dsn~usubscription-fetch-subscribers-protobuf~1]
     #[test_log::test(tokio::test)]
     async fn test_subscribe_success() {
         // create request and other required object(s)
@@ -255,7 +252,6 @@ mod tests {
         assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
-    // [utest->dsn~usubscription-fetch-subscribers-invalid-topic~1]
     #[test_case(UUri::default(); "Bad topic UUri")]
     #[test_case(UUri {
             authority_name: String::from("*"),

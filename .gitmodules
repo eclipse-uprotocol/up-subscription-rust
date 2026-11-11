@@ -1,3 +1,5 @@
-[submodule "up-spec"]
-	path = up-spec
-	url = https://github.com/eclipse-uprotocol/up-spec.git
+# This submodule inclusion purely exists to bring up-rust and up-spec OFT requirement markers 
+# into repo scope, so that they can be parsed by the requirements tracing tool.
+[submodule "up-rust"]
+	path = up-rust
+	url = git@github.com:eclipse-uprotocol/up-rust.git

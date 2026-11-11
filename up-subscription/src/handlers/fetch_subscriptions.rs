@@ -48,7 +48,6 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         message_attributes: &UAttributes,
         request_payload: Option<UPayload>,
     ) -> Result<Option<UPayload>, ServiceInvocationError> {
-        // [impl->dsn~usubscription-fetch-subscriptions-protobuf~1]
         let (fetch_subscriptions_request, _source) =
             helpers::extract_inputs::<FetchSubscriptionsRequest>(
                 RESOURCE_ID_FETCH_SUBSCRIPTIONS,
@@ -60,7 +59,6 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
         let FetchSubscriptionsRequest { request, .. } = fetch_subscriptions_request;
         let request_kind = match request {
             Some(Request::Topic(topic)) => {
-                // [impl->dsn~usubscription-fetch-subscriptions-invalid-topic~1]
                 helpers::validate_uri(&topic).map_err(|e| {
                     ServiceInvocationError::InvalidArgument(format!(
                         "Invalid topic uri '{topic}': {e}"
@@ -70,7 +68,6 @@ impl RequestHandler for FetchSubscriptionsRequestHandler {
             }
             Some(Request::Subscriber(subscriber)) => {
                 if let Some(subscriber) = subscriber.uri.into_option() {
-                    // [impl->dsn~usubscription-fetch-subscriptions-invalid-subscriber~1]
                     helpers::validate_uri(&subscriber).map_err(|e| {
                         ServiceInvocationError::InvalidArgument(format!(
                             "Invalid subscriber uri '{subscriber}': {e}"
@@ -154,7 +151,6 @@ mod tests {
 
     use crate::tests::test_lib;
 
-    // [utest->dsn~usubscription-fetch-subscriptions-protobuf~1]
     #[test_log::test(tokio::test)]
     async fn test_fetch_subscriptions_success() {
         // create request and other required object(s)
@@ -310,7 +306,6 @@ mod tests {
         assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
-    // [utest->dsn~usubscription-fetch-subscriptions-invalid-subscriber~1]
     #[test_case(UUri::default(); "Bad subscriber UUri")]
     #[test_case(UUri {
             authority_name: String::from("*"),
@@ -367,7 +362,6 @@ mod tests {
         assert!(result.is_err_and(|err| matches!(err, ServiceInvocationError::InvalidArgument(_))));
     }
 
-    // [utest->dsn~usubscription-fetch-subscriptions-invalid-topic~1]
     #[test_case(UUri::default(); "Bad topic UUri")]
     #[test_case(UUri {
             authority_name: String::from("*"),

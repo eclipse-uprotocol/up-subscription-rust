@@ -12,27 +12,28 @@
  ********************************************************************************/
 
 /*!
-up-subscription is an implementation of the [Eclipse uProtocol&trade; USubscription service](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-l3/usubscription/v3/README.adoc) for the rust programming language.
+up-subscription is an implementation of the [Eclipse uProtocol&trade; USubscription service](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-l3/usubscription/v4/README.adoc) for the rust programming language.
 
-This crate can be used to configure and run a USubscription service as part of your rust application, implementing the interface defined by the [uProtocol protobuf core API specification](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-core-api/uprotocol/core/usubscription/v3/usubscription.proto).
+This crate can be used to configure and run a USubscription service as part of your rust application, implementing the interface defined by the [uProtocol protobuf core API specification](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-core-api/uprotocol/core/usubscription/v4/usubscription.proto).
 
 ## Library contents
 
 * `usubscription` service as an frontend for the subscription management and notification handler actors.
-* `handlers` module, with UListener trait implementations for all functions defined by the USubscription API
 
 ## Note
 
-For a batteries-included approach to running up-subscription-rust, the `up-subscription-cli` module provides a command line frontend for running the USubscription service. It is available via the [project's github repo](https://github.com/eclipse-uprotocol/up-subscription-rust).
-
+For a batteries-included approach to running up-subscription-rust, the `up-subscription-cli` module provides a command line frontend for running USubscription service. It is available via the [project's github repo](https://github.com/eclipse-uprotocol/up-subscription-rust).
 
 ## References
 
-* [uProtocol Specification](https://github.com/eclipse-uprotocol/up-spec/tree/v1.6.0-alpha.2)
-* [uProtocol USubscription Specification](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-l3/usubscription/v3/README.adoc)
-* [uProtocol USubscription API](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-core-api/uprotocol/core/usubscription/v3/usubscription.proto)
+* [uProtocol Specification](https://github.com/eclipse-uprotocol/up-spec)
+* [uProtocol USubscription Specification](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-l3/usubscription/v4/README.adoc)
+* [uProtocol USubscription API](https://github.com/eclipse-uprotocol/up-spec/blob/main/up-core-api/uprotocol/core/usubscription/v4/usubscription.proto)
 
 */
+
+// Adapter types for use by all workspace members
+pub mod adapters;
 
 // public interface for configuring and starting usubscription service
 mod usubscription;
@@ -49,24 +50,30 @@ mod subscription_manager;
 // persistent storage for backend data
 mod persistency;
 
-// RpcServer handler functions, first-level input validation and dispatch to backend logic
-pub(crate) mod handlers {
-    pub(crate) mod fetch_subscribers;
-    pub(crate) mod fetch_subscriptions;
-    pub(crate) mod register_for_notifications;
-    pub(crate) mod reset;
-    pub(crate) mod subscribe;
-    pub(crate) mod unregister_for_notifications;
-    pub(crate) mod unsubscribe;
-}
-
-// misc other little helpers and convenience functions
-mod common {
-    pub(crate) mod helpers;
-}
-pub(crate) use common::*;
-
+// testing modules and infra
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::*;
+
+// helper function(s) used in the crate
+mod helpers {
+    use std::future::Future;
+    use tokio::task;
+    use tracing::error;
+
+    // `Send + Sync` is required so the boxed error can cross the `tokio::spawn` task boundary.
+    type SpawnResult<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Spawns `fut` on a new task, logging (rather than propagating) any error it returns.
+    pub(crate) fn spawn_and_log_error<F>(fut: F) -> task::JoinHandle<()>
+    where
+        F: Future<Output = SpawnResult<()>> + Send + 'static,
+    {
+        task::spawn(async move {
+            if let Err(e) = fut.await {
+                error!("{e}")
+            }
+        })
+    }
+}
