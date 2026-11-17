@@ -660,8 +660,8 @@ fn fetch_subscription_info(
 
 // Fetch all subscriptions of a topic or subscribers
 // [impl->req~usubscription-fetch-subscriptions~1]
-// [impl->dsn~usubscription-fetch-subscriptions-subscriber-filter~0]
-// [impl->dsn~usubscription-fetch-subscriptions-topic-filter~0]
+// [impl->req~usubscription-fetch-subscriptions-subscriber-filter~1]
+// [impl->req~usubscription-fetch-subscriptions-topic-filter~1]
 fn fetch_subscriptions(
     topic_subscribers: &persistency::SubscriptionsStore,
     remote_topics: &persistency::RemoteTopicsStore,

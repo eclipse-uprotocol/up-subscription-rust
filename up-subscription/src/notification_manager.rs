@@ -114,7 +114,7 @@ pub(crate) async fn notification_engine(
                 };
             }
             NotificationEvent::StateChange {
-                // [impl->dsn~usubscription-change-message-type~0]
+                // [impl->req~usubscription-change-message-type~1]
                 subscription_info,
                 respond_to,
             } => {
