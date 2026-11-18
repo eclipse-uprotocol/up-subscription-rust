@@ -223,7 +223,7 @@ checksum = "82f6aeea286b8eb4dd3431a1be1b59d290ace00f5bfd8e2a159bc2a05e2c1667"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -518,9 +518,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.6.7"
+version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946"
+checksum = "ac230478587d0269d8d6998b82ae69ea51509d55df66d9e92edd1f986904cd4a"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -540,14 +540,14 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.6.7"
+version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0"
+checksum = "895c9d8d2ac2dd8b8a29f3724a14e72aaaa6debcf8c38c82f97305c6a172767a"
 dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2372,16 +2372,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pickledb"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c53a5ade47760e8cc4986bdc5e72daeffaaaee64cbc374f9cfe0a00c1cd87b1f"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "pin-project"
 version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2868,18 +2858,18 @@ dependencies = [
 
 [[package]]
 name = "redb"
-version = "4.4.0"
+version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39178e0a867f9e3eaa6292a4ab1dd3613f2519c5b564341e1e7b29b270736cc4"
+checksum = "096b1dd5ec053c9c2a5a26a93aafeadf73ebcb710ea54dc3151f17a8e20535ef"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "redb-derive"
-version = "0.2.0"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8c9c6bb114bf5d4cdafa1da24223b0acdf22444d0a520edbd11848b6955326f"
+checksum = "d8b542777ce680b69ce80a5ae93ce438e4416e52b7c1471cfdcd92ee28f28ed8"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2923,7 +2913,7 @@ checksum = "2c9283685feec7d69af75fb0e858d5e7378f33fe4fc699383b2916ab9273e03c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -3287,7 +3277,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -3322,7 +3312,7 @@ checksum = "8d3b1629de253c70a0508c3899572da79ca359fdab27c7920ff00406df418906"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -3632,9 +3622,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.2"
+version = "3.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a207d6d6a2b7fc470b80443726053f18a2481b7e1eee970597051596567987a3"
+checksum = "4ae9ccbea3a7b0b09443036490c8f34a8b1b760fd345e5c0dae0aac718faea79"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3695,7 +3685,7 @@ dependencies = [
  "cfg-if",
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -3706,7 +3696,7 @@ checksum = "f4ce35ece947bccac166e1ded639133827a953f69a48ba134d17f91108333082"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
  "test-case-core",
 ]
 
@@ -3807,7 +3797,7 @@ checksum = "fe5197923287db20a58125f0bc85c062f7f2c892de97b18c356f9efb14b28524"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.2",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -4306,10 +4296,8 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "mockall",
- "pickledb",
  "redb",
  "redb-derive",
- "serde",
  "test-case",
  "test-log",
  "tokio",
